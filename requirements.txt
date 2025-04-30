@@ -1,0 +1,17 @@
+# Ingestion
+kafka-python>=2.0.2
+requests>=2.28.1
+
+# Spark Streaming
+pyspark>=3.3.0
+
+# Geospatial analytics
+geopandas>=0.12.2
+apache-sedona>=1.2.0
+
+# Time-series writes
+influxdb-client>=1.33.0
+
+# (Optional) Dashboard backend if you build one in Python
+flask>=2.2.2
+
