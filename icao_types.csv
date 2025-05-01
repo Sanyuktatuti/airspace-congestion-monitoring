@@ -1,0 +1,95 @@
+manufacturer_code,model_no,model_name,model_version,engine_count,engine_type,aircraft_desc,description,wtc,tdesig,wtg
+AIRBUS,A-350-900 XWB,,,2,Jet,LandPlane,L2J,H,A359,B
+AIRBUS,A-350-900 XWB Prestige,,,2,Jet,LandPlane,L2J,H,A359,B
+AIRBUS,Prestige (A-350-900),,,2,Jet,LandPlane,L2J,H,A359,B
+AIRBUS,C-212,,,2,Turboprop/Turboshaft,LandPlane,L2T,M,C212,G
+AIRBUS,A-300B2-200,,,2,Jet,LandPlane,L2J,H,A30B,C
+AIRBUS,A-300B2K-3,,,2,Jet,LandPlane,L2J,H,A30B,C
+AIRBUS,A-300B4-2,,,2,Jet,LandPlane,L2J,H,A30B,C
+AIRBUS,A-300B4-100,,,2,Jet,LandPlane,L2J,H,A30B,C
+AIRBUS,A-300B4-200,,,2,Jet,LandPlane,L2J,H,A30B,C
+AIRBUS,A-300B4-600,,,2,Jet,LandPlane,L2J,H,A306,C
+AIRBUS,A-300C4-200,,,2,Jet,LandPlane,L2J,H,A30B,C
+AIRBUS,A-300C4-600,,,2,Jet,LandPlane,L2J,H,A306,C
+AIRBUS,A-300F4-200,,,2,Jet,LandPlane,L2J,H,A30B,C
+AIRBUS,A-300F4-600,,,2,Jet,LandPlane,L2J,H,A306,C
+AIRBUS,A-300ST,Beluga,,2,Jet,LandPlane,L2J,H,A3ST,C
+AIRBUS,A-300ST,Super Transporter,,2,Jet,LandPlane,L2J,H,A3ST,C
+AIRBUS,A-310,,,2,Jet,LandPlane,L2J,H,A310,C
+AIRBUS,A-318,,,2,Jet,LandPlane,L2J,M,A318,D
+AIRBUS,A-319,,,2,Jet,LandPlane,L2J,M,A319,D
+AIRBUS,A-319,ACJ,,2,Jet,LandPlane,L2J,M,A319,D
+AIRBUS,A-320,,,2,Jet,LandPlane,L2J,M,A320,D
+AIRBUS,A-321,,,2,Jet,LandPlane,L2J,M,A321,D
+AIRBUS,A-330-200,,,2,Jet,LandPlane,L2J,H,A332,B
+AIRBUS,A-330-300,,,2,Jet,LandPlane,L2J,H,A333,B
+AIRBUS,A-340-200,,,4,Jet,LandPlane,L4J,H,A342,B
+AIRBUS,A-340-300,,,4,Jet,LandPlane,L4J,H,A343,B
+AIRBUS,A-340-500,,,4,Jet,LandPlane,L4J,H,A345,B
+AIRBUS,A-340-600,,,4,Jet,LandPlane,L4J,H,A346,B
+AIRBUS,A-380-800,,,4,Jet,LandPlane,L4J,J,A388,A
+AIRBUS,,Beluga,,2,Jet,LandPlane,L2J,H,A3ST,C
+AIRBUS,CC-150,Polaris,,2,Jet,LandPlane,L2J,H,A310,C
+AIRBUS,,Polaris,,2,Jet,LandPlane,L2J,H,A310,C
+AIRBUS,,Super Transporter,,2,Jet,LandPlane,L2J,H,A3ST,C
+AIRBUS,VC-1 ACJ,,,2,Jet,LandPlane,L2J,M,A319,D
+AIRBUS,A-400M Grizzly,,,4,Turboprop/Turboshaft,LandPlane,L4T,H,A400,C
+AIRBUS,A-318 Elite,,,2,Jet,LandPlane,L2J,M,A318,D
+AIRBUS,A-320 Prestige,,,2,Jet,LandPlane,L2J,M,A320,D
+AIRBUS,A-330-200 Prestige,,,2,Jet,LandPlane,L2J,H,A332,B
+AIRBUS,A-340-200 Prestige,,,4,Jet,LandPlane,L4J,H,A342,B
+AIRBUS,A-340-300 Prestige,,,4,Jet,LandPlane,L4J,H,A343,B
+AIRBUS,A-340-500 Prestige,,,4,Jet,LandPlane,L4J,H,A345,B
+AIRBUS,A-340-600 Prestige,,,4,Jet,LandPlane,L4J,H,A346,B
+AIRBUS,A-380-800 Prestige,,,4,Jet,LandPlane,L4J,J,A388,A
+AIRBUS,Prestige (A-320),,,2,Jet,LandPlane,L2J,M,A320,D
+AIRBUS,Prestige (A-330-200),,,2,Jet,LandPlane,L2J,H,A332,B
+AIRBUS,Prestige (A-340-200),,,4,Jet,LandPlane,L4J,H,A342,B
+AIRBUS,Prestige (A-340-300),,,4,Jet,LandPlane,L4J,H,A343,B
+AIRBUS,Prestige (A-340-500),,,4,Jet,LandPlane,L4J,H,A345,B
+AIRBUS,Prestige (A-340-600),,,4,Jet,LandPlane,L4J,H,A346,B
+AIRBUS,Prestige (A-380-800),,,4,Jet,LandPlane,L4J,J,A388,A
+AIRBUS,Elite,,,2,Jet,LandPlane,L2J,M,A318,D
+AIRBUS,KC-30,,,2,Jet,LandPlane,L2J,H,A332,B
+AIRBUS,A-350-1000 XWB,,,2,Jet,LandPlane,L2J,H,A35K,B
+AIRBUS,A-350-1000 XWB Prestige,,,2,Jet,LandPlane,L2J,H,A35K,B
+AIRBUS,Prestige (A-350-1000),,,2,Jet,LandPlane,L2J,H,A35K,B
+AIRBUS,Voyager,,,2,Jet,LandPlane,L2J,H,A332,B
+AIRBUS,A-400M Atlas,,,4,Turboprop/Turboshaft,LandPlane,L4T,H,A400,C
+AIRBUS,Grizzly,,,4,Turboprop/Turboshaft,LandPlane,L4T,H,A400,C
+AIRBUS,Atlas,,,4,Turboprop/Turboshaft,LandPlane,L4T,H,A400,C
+AIRBUS,C-295,,,2,Turboprop/Turboshaft,LandPlane,L2T,M,C295,F
+AIRBUS,C-295 Persuader,,,2,Turboprop/Turboshaft,LandPlane,L2T,M,C295,F
+AIRBUS,Persuader (C-295),,,2,Turboprop/Turboshaft,LandPlane,L2T,M,C295,F
+AIRBUS,SC-105 Amazonas,,,2,Turboprop/Turboshaft,LandPlane,L2T,M,C295,F
+AIRBUS,Amazonas,,,2,Turboprop/Turboshaft,LandPlane,L2T,M,C295,F
+AIRBUS,CN-235,,,2,Turboprop/Turboshaft,LandPlane,L2T,M,CN35,G
+AIRBUS,CN-235 Persuader,,,2,Turboprop/Turboshaft,LandPlane,L2T,M,CN35,G
+AIRBUS,Persuader (CN-235),,,2,Turboprop/Turboshaft,LandPlane,L2T,M,CN35,G
+AIRBUS,HC-144 Ocean Sentry,,,2,Turboprop/Turboshaft,LandPlane,L2T,M,CN35,G
+AIRBUS,Ocean Sentry,,,2,Turboprop/Turboshaft,LandPlane,L2T,M,CN35,G
+AIRBUS,,E-Fan,,2,Electric,LandPlane,L2E,L,EFAN,G
+AIRBUS,A-330-900,,,2,Jet,LandPlane,L2J,H,A339,B
+AIRBUS,A-319neo,,,2,Jet,LandPlane,L2J,M,A19N,D
+AIRBUS,A-320neo,,,2,Jet,LandPlane,L2J,M,A20N,D
+AIRBUS,A-321neo,,,2,Jet,LandPlane,L2J,M,A21N,D
+AIRBUS,A-330-800,,,2,Jet,LandPlane,L2J,H,A338,B
+AIRBUS,A-330-700,Beluga XL,,2,Jet,LandPlane,L2J,H,A337,B
+AIRBUS,,Beluga XL,,2,Jet,LandPlane,L2J,H,A337,B
+AIRBUS,A-220-100,,,2,Jet,LandPlane,L2J,M,BCS1,D
+AIRBUS,A-220-300,,,2,Jet,LandPlane,L2J,M,BCS3,D
+AIRBUS,A-220-100 ACJ TwoTwenty,,,2,Jet,LandPlane,L2J,M,BCS1,D
+AIRBUS,,ACJ TwoTwenty,,2,Jet,LandPlane,L2J,M,BCS1,D
+AIRBUS,ACJ (A-319),,,2,Jet,LandPlane,L2J,M,A319,D
+AIRBUS,ACJ-319neo,,,2,Jet,LandPlane,L2J,M,A19N,D
+AIRBUS,ACJ-320neo,,,2,Jet,LandPlane,L2J,M,A20N,D
+AIRBUS,ACJ-330-800,,,2,Jet,LandPlane,L2J,H,A338,B
+AIRBUS,ACJ-330-900,,,2,Jet,LandPlane,L2J,H,A339,B
+AIRBUS,ACJ-350-900,,,2,Jet,LandPlane,L2J,H,A359,B
+AIRBUS,ACJ-350-1000,,,2,Jet,LandPlane,L2J,H,A35K,B
+AIRBUS,A-330-MRTT,,,2,Jet,LandPlane,L2J,H,A332,B
+AIRBUS,A-330-MRTT Voyager,,,2,Jet,LandPlane,L2J,H,A332,B
+AIRBUS,KC-330 Cygnus,,,2,Jet,LandPlane,L2J,H,A332,B
+AIRBUS,A-330-MRTT Phénix,,,2,Jet,LandPlane,L2J,H,A332,B
+AIRBUS,,Cygnus,,2,Jet,LandPlane,L2J,H,A332,B
+AIRBUS,,Phénix,,2,Jet,LandPlane,L2J,H,A332,B
