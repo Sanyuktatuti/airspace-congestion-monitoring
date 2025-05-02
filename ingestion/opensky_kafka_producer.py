@@ -10,6 +10,7 @@ import json
 import csv
 import logging
 import requests
+import os
 from kafka import KafkaProducer
 
 # Configure logging
@@ -25,25 +26,28 @@ def load_metadata(csv_path):
     with open(csv_path, newline='') as f:
         reader = csv.DictReader(f)
         for row in reader:
-            metadata[row['icao24']] = row
+            metadata[row['icao24'].strip().lower()] = row
     logging.info(f"Loaded metadata for {len(metadata)} aircraft.")
     return metadata
 
 # Fetch live state vectors from OpenSky REST API
-def fetch_states(username=None, password=None):
-    url = 'https://opensky-network.org/api/states/all'
-    auth = (username, password) if username and password else None
+def fetch_states():
+    url = "https://opensky-network.org/api/states/all"
+    user = os.getenv("sanyuktatuti")
+    pw   = os.getenv("Sanyukta*22")
+    auth = (user, pw) if user and pw else None
     try:
-        response = requests.get(url, auth=auth, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        return data.get('states', []), data.get('time')
+        resp = requests.get(url, auth=auth, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("states", []), data.get("time")
     except requests.RequestException as e:
         logging.error(f"Error fetching states: {e}")
         return [], None
 
 # Normalize and enrich each state vector into a dict
-def enrich_state(state, timestamp, metadata):
+def enrich_state(state, metadata):
+    # these keys match the positions in the OpenSky 'state' array
     keys = [
         'icao24', 'callsign', 'origin_country', 'time_position', 'last_contact',
         'longitude', 'latitude', 'baro_altitude', 'on_ground', 'velocity',
@@ -51,7 +55,9 @@ def enrich_state(state, timestamp, metadata):
         'squawk', 'spi', 'position_source'
     ]
     record = dict(zip(keys, state))
-    record['fetch_time'] = timestamp
+    # stamp with current time in ms
+    record['fetch_time'] = int(time.time() * 1000)
+    # attach any static metadata (or empty dict)
     meta = metadata.get(record['icao24'].strip().lower())
     record['aircraft'] = meta if meta else {}
     return record
@@ -60,10 +66,10 @@ def main():
     setup_logging()
 
     # Configuration
-    METADATA_CSV = 'data/aircraft_metadata.csv'
-    KAFKA_BOOTSTRAP = 'localhost:9092'
-    TOPIC = 'flight-stream'
-    POLL_INTERVAL = 10  # seconds
+    METADATA_CSV      = 'data/aircraft_metadata.csv'
+    KAFKA_BOOTSTRAP   = 'localhost:9092'
+    TOPIC             = 'flight-stream'
+    POLL_INTERVAL_SEC = 10  # seconds
 
     metadata = load_metadata(METADATA_CSV)
 
@@ -78,18 +84,21 @@ def main():
 
     try:
         while True:
-            states, ts = fetch_states()
+            states, api_ts = fetch_states()
             if not states:
                 logging.warning("No state vectors fetched.")
+            sent = 0
             for state in states:
-                rec = enrich_state(state, ts, metadata)
+                rec = enrich_state(state, metadata)
                 key = rec.get('icao24', 'unknown')
                 producer.send(TOPIC, key=key, value=rec)
+                sent += 1
             producer.flush()
-            logging.info(f"Published {len(states)} messages at {ts}")
-            time.sleep(POLL_INTERVAL)
+            if sent:
+                logging.info(f"Published {sent} messages. latest fetch_time={rec['fetch_time']}")
+            time.sleep(POLL_INTERVAL_SEC)
     except KeyboardInterrupt:
-        logging.info("Shutting down producer...")
+        logging.info("Shutdown requested, exiting…")
     finally:
         producer.close()
 
