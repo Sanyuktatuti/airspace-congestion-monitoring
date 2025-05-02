@@ -10,6 +10,7 @@ import json
 import csv
 import logging
 import requests
+import os
 from kafka import KafkaProducer
 
 # Configure logging
@@ -30,14 +31,16 @@ def load_metadata(csv_path):
     return metadata
 
 # Fetch live state vectors from OpenSky REST API
-def fetch_states(username=None, password=None):
-    url = 'https://opensky-network.org/api/states/all'
-    auth = (username, password) if username and password else None
+def fetch_states():
+    url = "https://opensky-network.org/api/states/all"
+    user = os.getenv("sanyuktatuti")
+    pw   = os.getenv("Sanyukta*22")
+    auth = (user, pw) if user and pw else None
     try:
-        response = requests.get(url, auth=auth, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        return data.get('states', []), data.get('time')
+        resp = requests.get(url, auth=auth, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("states", []), data.get("time")
     except requests.RequestException as e:
         logging.error(f"Error fetching states: {e}")
         return [], None
