@@ -75,7 +75,7 @@ airspace-monitoring/
 
 4. **Prepare Metadata**:
 
-   * Place your `aircraft_metadata.csv` in `ingestion/data/`.
+   * Place your `aircraft_metadata.csv` in `data/`.
 
 ## Running the Pipeline
 
