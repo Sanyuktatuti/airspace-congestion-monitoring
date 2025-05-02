@@ -16,12 +16,12 @@ Key Features:
 
 ```
 airspace-monitoring/
+├── data/
+│   ├── aircraft_metadata.csv    # Static aircraft metadata
+│   └── test_samples.jsonl       # Recorded OpenSky messages for replay mode
 ├── ingestion/
 │   ├── opensky_kafka_producer.py    # Publishes enriched flight data to Kafka
 │   ├── replay_producer.py           # Replays saved data for offline testing
-│   └── data/
-│       ├── aircraft_metadata.csv    # Static aircraft metadata
-│       └── test_samples.jsonl       # Recorded OpenSky messages for replay mode
 ├── kafka/
 │   └── docker-compose.yml           # Kafka & Zookeeper setup
 ├── spark/
