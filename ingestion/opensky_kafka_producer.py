@@ -44,6 +44,18 @@ def fetch_states():
         logging.error(f"Error fetching states: {e}")
         return [], None
 
+"""def fetch_states():
+    url = "https://opensky-network.org/api/states/all"
+    try:
+        # no auth parameter
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("states", []), data.get("time")
+    except requests.RequestException as e:
+        logging.error(f"Error fetching states: {e}")
+        return [], None"""
+
 # Normalize and enrich each state vector into a dict
 def enrich_state(state, metadata):
     # these keys match the positions in the OpenSky 'state' array
