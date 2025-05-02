@@ -33,8 +33,6 @@ def load_metadata(csv_path):
 # Fetch live state vectors from OpenSky REST API
 def fetch_states():
     url = "https://opensky-network.org/api/states/all"
-    user = os.getenv("sanyuktatuti")
-    pw   = os.getenv("Sanyukta*22")
     auth = (user, pw) if user and pw else None
     try:
         resp = requests.get(url, auth=auth, timeout=10)
