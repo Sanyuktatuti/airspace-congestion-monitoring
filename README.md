@@ -94,10 +94,9 @@ When API rate limits prevent live ingestion—or for offline testing—you can r
 1. **Record live messages** (run once when not rate-limited):
 
    ```bash
-   mkdir -p ingestion/data
    python ingestion/opensky_kafka_producer.py \
      | jq -c '.value' \
-     > ingestion/data/test_samples.jsonl
+     > data/test_samples.jsonl
    ```
 
    This saves each JSON record (one per line) into `ingestion/data/test_samples.jsonl`.
