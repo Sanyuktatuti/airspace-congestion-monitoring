@@ -33,7 +33,7 @@ def load_metadata(csv_path):
 # Fetch live state vectors from OpenSky REST API
 def fetch_states():
     url = "https://opensky-network.org/api/states/all"
-    user = os.getenv("sanyuktatuti")
+    user = os.getenv("sanyuktatuti22")
     pw   = os.getenv("Sanyukta*22")
     auth = (user, pw) if user and pw else None
     try:
@@ -44,6 +44,18 @@ def fetch_states():
     except requests.RequestException as e:
         logging.error(f"Error fetching states: {e}")
         return [], None
+
+"""def fetch_states():
+    url = "https://opensky-network.org/api/states/all"
+    try:
+        # no auth parameter
+        resp = requests.get(url, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("states", []), data.get("time")
+    except requests.RequestException as e:
+        logging.error(f"Error fetching states: {e}")
+        return [], None"""
 
 # Normalize and enrich each state vector into a dict
 def enrich_state(state, metadata):
