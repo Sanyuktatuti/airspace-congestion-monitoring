@@ -1,7 +1,7 @@
 import requests
 import csv
 
-API_KEY = "1e56e11d-c705-4c3b-9356-9c2dc9962aeb"
+API_KEY = "26960a82-e995-4c19-a4f9-1273905875e5"
 BASE = "https://applications.icao.int/dataservices/api"
 
 # 1) get all manufacturers

@@ -1,4 +1,6 @@
-#!/Users/sanyuktatuti/Big-Data-Project/airspace-congestion-monitoring/venv/bin/python3
+#!/bin/sh
+'''exec' "/Users/naman/On-Device/NYU/Big Data/Project/airspace-congestion-monitoring/venv/bin/python3.13" "$0" "$@"
+' '''
 # -*- coding: utf-8 -*-
 import re
 import sys
