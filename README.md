@@ -16,21 +16,12 @@ Key Features:
 
 ```
 airspace-monitoring/
-<<<<<<< HEAD
-├── ingestion/
-│   ├── opensky_kafka_producer.py    # Publishes enriched flight data to Kafka
-│   ├── replay_producer.py           # Replays saved data for offline testing
-│   └── data/
-│       ├── aircraft_metadata.csv    # Static aircraft metadata
-│       └── test_samples.jsonl       # Recorded OpenSky messages for replay mode
-=======
 ├── data/
 │   ├── aircraft_metadata.csv    # Static aircraft metadata
 │   └── test_samples.jsonl       # Recorded OpenSky messages for replay mode
 ├── ingestion/
 │   ├── opensky_kafka_producer.py    # Publishes enriched flight data to Kafka
 │   ├── replay_producer.py           # Replays saved data for offline testing
->>>>>>> 8c10b662a7bcd263758b5846d13ca639888994dc
 ├── kafka/
 │   └── docker-compose.yml           # Kafka & Zookeeper setup
 ├── spark/
@@ -84,11 +75,7 @@ airspace-monitoring/
 
 4. **Prepare Metadata**:
 
-<<<<<<< HEAD
-   * Place your `aircraft_metadata.csv` in `ingestion/data/`.
-=======
    * Place your `aircraft_metadata.csv` in `data/`.
->>>>>>> 8c10b662a7bcd263758b5846d13ca639888994dc
 
 ## Running the Pipeline
 
