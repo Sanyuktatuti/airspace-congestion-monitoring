@@ -17,8 +17,10 @@ producer = KafkaProducer(
 with open(DATA_FILE) as f:
     for line in f:
         rec = json.loads(line)
-        key = rec.get("icao24", "unknown")
-        producer.send("flight-stream", key=key, value=rec)
+        key = rec.get("key", "unknown")
+        if(key == "unknown"):
+            continue
+        producer.send("flight-stream", key=key, value=rec.get("value", "None"))
         producer.flush()
         time.sleep(0.1)   # send ~10 messages/sec; you can speed this up if you like
 

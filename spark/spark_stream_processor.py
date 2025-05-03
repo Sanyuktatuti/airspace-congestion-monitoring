@@ -1,61 +1,89 @@
 # spark/spark_stream_processor.py
 
+# -------------------------
+# Airspace Congestion Streaming Processor with Enhanced Commentary
+# -------------------------
+# This module connects Kafka → Spark Structured Streaming,
+# applies per-flight risk & derived metrics (via risk_model.py),
+# computes spatial aggregates, and writes results back to Kafka and console.
+
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
-    from_json, col, expr,
-    to_json, struct,
+    from_json, col, to_json, struct,
     floor, window, avg, count,
-    lag, stddev, when, lit, udf
+    when, lit, expr
 )
 from pyspark.sql.types import (
     StructType, StructField, StringType, DoubleType,
-    BooleanType, LongType, ArrayType, MapType, TimestampType
+    BooleanType, LongType, ArrayType, MapType
 )
 from pyspark.sql.window import Window
+
+# Import pure-function metric calculators
+from spark.risk_model import (
+    compute_risk_score,
+    compute_acceleration,
+    compute_turn_rate,
+    compute_alt_stability,
+    compute_dt_last_contact,
+    compute_altitude_delta
+)
 
 # -------------------------
 # 1°) Schema & Constants
 # -------------------------
+# Define the expected JSON schema of incoming messages from Kafka "flight-stream".
+# Each field in StructType maps to a JSON key and enforces type safety in Spark.
 schema = StructType([
-    StructField("icao24", StringType()),
-    StructField("callsign", StringType()),
-    StructField("origin_country", StringType()),
-    StructField("time_position", LongType()),
-    StructField("last_contact", LongType()),
-    StructField("longitude", DoubleType()),
-    StructField("latitude", DoubleType()),
-    StructField("baro_altitude", DoubleType()),
-    StructField("on_ground", BooleanType()),
-    StructField("velocity", DoubleType()),
-    StructField("true_track", DoubleType()),
-    StructField("vertical_rate", DoubleType()),
-    StructField("sensors", ArrayType(LongType())),
-    StructField("geo_altitude", DoubleType()),
-    StructField("squawk", StringType()),
-    StructField("spi", BooleanType()),
-    StructField("position_source", StringType()),
-    StructField("fetch_time", LongType()),
-    StructField("aircraft", MapType(StringType(), StringType()))
+    StructField("icao24", StringType()),       # unique aircraft identifier (hex)
+    StructField("callsign", StringType()),     # flight callsign (string, may include spaces)
+    StructField("origin_country", StringType()),# country of origin for the flight
+    StructField("time_position", LongType()),  # timestamp when position last updated (s since epoch)
+    StructField("last_contact", LongType()),   # timestamp of last contact (s since epoch)
+    StructField("longitude", DoubleType()),    # longitude in degrees East
+    StructField("latitude", DoubleType()),     # latitude in degrees North
+    StructField("baro_altitude", DoubleType()),# barometric altitude in meters
+    StructField("on_ground", BooleanType()),   # true if aircraft on ground
+    StructField("velocity", DoubleType()),     # ground speed in m/s
+    StructField("true_track", DoubleType()),   # heading in degrees (0=N, clockwise)
+    StructField("vertical_rate", DoubleType()),# vertical speed in m/s (positive climb)
+    StructField("sensors", ArrayType(LongType())), # optional sensor IDs list
+    StructField("geo_altitude", DoubleType()), # GPS-based altitude in meters
+    StructField("squawk", StringType()),       # transponder code
+    StructField("spi", BooleanType()),         # special purpose indicator
+    StructField("position_source", StringType()), # source of position data
+    StructField("fetch_time", LongType()),     # ingestion timestamp (ms since epoch)
+    StructField("aircraft", MapType(StringType(), StringType())) # static metadata map
 ])
 
-# degrees per grid cell for spatial aggregates
+# Grid size in degrees for spatial aggregation.
+# A 1.0° cell in lat/lon covers roughly ~111km at equator per degree.
 GRID_SIZE = 1.0
 
-# -------------------------
-# 2°) Spark Setup
-# -------------------------
 if __name__ == "__main__":
+    # -------------------------
+    # 2°) SparkSession Setup
+    # -------------------------
+    # Build a SparkSession with Kafka support via spark-sql-kafka package.
     spark = (
         SparkSession.builder
             .appName("AirspaceCongestionStreaming")
-            .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.5")
+            .config(
+                "spark.jars.packages",
+                "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.5"
+            )
+            # Force driver to bind to localhost for Kafka metadata
             .config("spark.driver.bindAddress", "127.0.0.1")
             .config("spark.driver.host", "127.0.0.1")
             .getOrCreate()
     )
-    spark.sparkContext.setLogLevel("WARN")
 
-    # Read raw stream from Kafka
+    spark.sparkContext.setLogLevel("WARN")  # suppress verbose INFO logs
+
+    # -------------------------
+    # 3°) Read Raw Stream
+    # -------------------------
+    # Subscribe to Kafka topic 'flight-stream'.  Each record's value is a JSON string.
     raw = spark.readStream \
         .format("kafka") \
         .option("kafka.bootstrap.servers", "localhost:9092") \
@@ -63,7 +91,7 @@ if __name__ == "__main__":
         .option("startingOffsets", "earliest") \
         .load()
 
-    # Parse JSON payload into columns
+    # Parse the JSON payload into typed columns according to `schema`.
     flights = raw.select(
         from_json(col("value").cast("string"), schema).alias("data")
     ).select("data.*")
@@ -150,7 +178,7 @@ if __name__ == "__main__":
     agg = binned \
         .withWatermark("event_ts", "5 seconds") \
         .groupBy(
-            window(col("event_ts"), "10 seconds"),
+            window(col("event_ts"), "10 seconds"),  # tumbling window
             col("lat_bin"), col("lon_bin")
         ) \
         .agg(
@@ -183,6 +211,7 @@ if __name__ == "__main__":
     # OUTPUT STREAMS
     # -------------------------
     # 1) Per-flight metrics → Kafka / console
+
     per_flight_out = scored.select(
         to_json(struct(
             "icao24", "fetch_time", "risk_score",
@@ -223,4 +252,6 @@ if __name__ == "__main__":
         .option("checkpointLocation", "/tmp/spark-checkpoints/flight-aggregates-v2") \
         .start()
 
+
+    # 8.3) Block until termination of streaming queries
     spark.streams.awaitAnyTermination()
