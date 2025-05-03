@@ -34,8 +34,7 @@ def load_metadata(csv_path):
 """
 def fetch_states():
     url = "https://opensky-network.org/api/states/all"
-    user = os.getenv("sanyuktatuti22")
-    pw   = os.getenv("Sanyukta*22")
+    user, pw = None, None
     auth = (user, pw) if user and pw else None
     try:
         resp = requests.get(url, auth=auth, timeout=10)
