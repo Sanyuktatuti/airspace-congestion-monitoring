@@ -1,5 +1,4 @@
 # spark/spark_stream_processor.py
-
 # -------------------------
 # Airspace Congestion Streaming Processor with Enhanced Commentary
 # -------------------------
@@ -77,7 +76,6 @@ if __name__ == "__main__":
             .config("spark.driver.host", "127.0.0.1")
             .getOrCreate()
     )
-
     spark.sparkContext.setLogLevel("WARN")  # suppress verbose INFO logs
 
     # -------------------------
@@ -97,84 +95,105 @@ if __name__ == "__main__":
     ).select("data.*")
 
     # -------------------------
-    # A) Per-flight Derived Metrics
+    # 4°) Per-Flight Metrics
     # -------------------------
-    # 1) Risk score (existing)
+    # 4.1) Risk Score: combines speed and climb/descent risk into [0,2]
     scored = flights.withColumn(
         "risk_score",
-        expr(
-            "(CASE WHEN NOT on_ground AND velocity IS NOT NULL "
-            "THEN LEAST(velocity/250.0,1.0) ELSE 0 END) + "
-            "(CASE WHEN vertical_rate IS NOT NULL "
-            "THEN LEAST(ABS(vertical_rate)/10.0,1.0) ELSE 0 END)"
+        compute_risk_score(
+            col("velocity"),
+            col("vertical_rate"),
+            col("on_ground")
         )
     )
 
-    # Set up window spec by flight ID for delta computations
+    # Define time-ordered window per flight (ICAO) for lag & rolling stats.
     flight_win = Window.partitionBy("icao24").orderBy("fetch_time")
 
-    # 2) Acceleration: (v_t - v_{t-1}) / delta_t
+    # 4.2) Acceleration a_t = (v_t - v_{t-1}) / Δt  [m/s²]
     scored = scored.withColumn(
-        "prev_vel", lag("velocity").over(flight_win)
-    ).withColumn(
         "acceleration",
-        (col("velocity") - col("prev_vel")) / \
-        ((col("fetch_time") - lag("fetch_time").over(flight_win)) / 1000)
+        compute_acceleration(
+            col("velocity"),
+            col("fetch_time"),
+            flight_win
+        )
     )
 
-    # 3) Turn rate: (track_t - track_{t-1}) / delta_t
+    # 4.3) Turn Rate ω_t = (θ_t - θ_{t-1}) / Δt  [deg/s]
     scored = scored.withColumn(
-        "prev_track", lag("true_track").over(flight_win)
-    ).withColumn(
         "turn_rate",
-        (col("true_track") - col("prev_track")) / \
-        ((col("fetch_time") - lag("fetch_time").over(flight_win)) / 1000)
+        compute_turn_rate(
+            col("true_track"),
+            col("fetch_time"),
+            flight_win
+        )
     )
 
-    # 4) Altitude stability: rolling STD of baro_altitude (window of last 6 observations)
-    stability_win = flight_win.rowsBetween(-5, 0)
+    # 4.4) Altitude Stability Index = rolling stddev(baro_altitude) over last 6 samples [m]
     scored = scored.withColumn(
         "alt_stability_idx",
-        stddev("baro_altitude").over(stability_win)
+        compute_alt_stability(
+            col("baro_altitude"),
+            flight_win,
+            lookback=5  # includes current + previous 5 rows
+        )
     )
 
-    # 5) Time-since-last-contact: (fetch_time - last_contact)/1000
+    # 4.5) Time Since Last Contact Δt_contact = (fetch_time - last_contact)/1000  [s]
     scored = scored.withColumn(
         "dt_last_contact",
-        (col("fetch_time") - col("last_contact")) / 1000
+        compute_dt_last_contact(
+            col("fetch_time"),
+            col("last_contact")
+        )
     )
 
-    # 6) Altitude delta: geo_altitude - baro_altitude
+    # 4.6) Altitude Delta = geo_altitude - baro_altitude  [m]
     scored = scored.withColumn(
         "altitude_delta",
-        col("geo_altitude") - col("baro_altitude")
+        compute_altitude_delta(
+            col("geo_altitude"),
+            col("baro_altitude")
+        )
     )
 
     # -------------------------
-    # B) Trajectory-level Features (skeleton placeholders)
+    # 5°) Trajectory-Level (placeholders)
     # -------------------------
-    # TODO: group by icao24, maintain state or sliding window for:
-    #   - rolling risk trend
-    #   - path clustering
-    #   - ETA prediction
-    # Use mapGroupsWithState or FlatMapGroupsWithState for implementation
+    # TODO: risk trend, path clustering, ETA via mapGroupsWithState
 
     # -------------------------
-    # C) Spatial Aggregates Enhancements
+    # 6°) Spatial Aggregates
     # -------------------------
-    # Convert fetch_time → Timestamp for windowing
-    with_ts = scored.withColumn("event_ts", expr("CAST(fetch_time/1000 AS TIMESTAMP)"))
+    # 6.1) Convert fetch_time (ms) → Timestamp for windowing operations
+    with_ts = scored.withColumn(
+        "event_ts",
+        expr("CAST(fetch_time/1000 AS TIMESTAMP)")  # convert ms→s then to Timestamp
+    )
 
-    # Compute grid bins
+    # 6.2) Compute grid cell indices:
+    #      lat_bin = floor((latitude + 90) / GRID_SIZE)
+    #      lon_bin = floor((longitude + 180) / GRID_SIZE)
+    #      alt_band categorizes altitudes into low/mid/high bands
     binned = with_ts \
-        .withColumn("lat_bin", floor((col("latitude") + 90.0) / GRID_SIZE)) \
-        .withColumn("lon_bin", floor((col("longitude") + 180.0) / GRID_SIZE)) \
-        .withColumn("alt_band", when(col("baro_altitude") < 10000, lit("low"))
-        .when(col("baro_altitude") > 30000, lit("high"))
-           .otherwise(lit("mid"))
+        .withColumn(
+            "lat_bin",
+            floor((col("latitude") + 90.0) / GRID_SIZE)
+        ) \
+        .withColumn(
+            "lon_bin",
+            floor((col("longitude") + 180.0) / GRID_SIZE)
+        ) \
+        .withColumn(
+            "alt_band",
+            when(col("baro_altitude") < 10000, lit("low"))   # below 10k m
+            .when(col("baro_altitude") > 30000, lit("high")) # above 30k m
+            .otherwise(lit("mid"))                             # between
         )
 
-    # Base aggregation (existing)
+    # 6.3) Aggregate per 10s tumbling window + spatial cell
+    # Watermark of 5s prevents unbounded state for late data
     agg = binned \
         .withWatermark("event_ts", "5 seconds") \
         .groupBy(
@@ -186,32 +205,16 @@ if __name__ == "__main__":
             count("icao24").alias("flight_count")
         )
 
-    # TODO: kernel-density heatmaps, proximity alerts
+    # -------------------------
+    # 7°) Temporal / Context / ML (TODO)
+    # -------------------------
+    # Trend detection, anomaly scoring, reverse-geocode, weather joins,
+    # streaming k-means for cell-level clustering, etc.
 
     # -------------------------
-    # D) Temporal Analytics (skeleton)
+    # 8°) Output Streams
     # -------------------------
-    # TODO: compare current window vs. previous windows for trend/peak detection
-    # TODO: anomaly scoring (e.g., Poisson model deviation)
-
-    # -------------------------
-    # E) Enrichment & Context (skeleton)
-    # -------------------------
-    # TODO: reverse-geocode bins → regions
-    # TODO: airport-centric metrics (inbound/outbound counts)
-    # TODO: weather join (SIGMETs, warnings)
-
-    # -------------------------
-    # F) Machine-learning Features (skeleton)
-    # -------------------------
-    # TODO: build per-flight feature vectors for online ML
-    # TODO: streaming k-means or anomaly detection per cell
-
-    # -------------------------
-    # OUTPUT STREAMS
-    # -------------------------
-    # 1) Per-flight metrics → Kafka / console
-
+    # 8.1) Per-flight metrics → console & Kafka topic 'flight-metrics'
     per_flight_out = scored.select(
         to_json(struct(
             "icao24", "fetch_time", "risk_score",
@@ -232,7 +235,7 @@ if __name__ == "__main__":
         .option("checkpointLocation", "/tmp/spark-checkpoints/flight-metrics") \
         .start()
 
-    # 2) Spatial aggregates → Kafka / console
+    # 8.2) Spatial aggregates → console & Kafka topic 'flight-aggregates'
     agg_out = agg.select(
         to_json(struct(
             col("window.start").alias("window_start"),
@@ -251,7 +254,6 @@ if __name__ == "__main__":
         .option("topic", "flight-aggregates") \
         .option("checkpointLocation", "/tmp/spark-checkpoints/flight-aggregates-v2") \
         .start()
-
 
     # 8.3) Block until termination of streaming queries
     spark.streams.awaitAnyTermination()
