@@ -82,17 +82,28 @@ if __name__ == "__main__":
     # 3°) Read Raw Stream
     # -------------------------
     # Subscribe to Kafka topic 'flight-stream'.  Each record's value is a JSON string.
-    raw = spark.readStream \
+    """raw = spark.readStream \
         .format("kafka") \
         .option("kafka.bootstrap.servers", "localhost:9092") \
         .option("subscribe", "flight-stream") \
         .option("startingOffsets", "earliest") \
         .load()
 
-    # Parse the JSON payload into typed columns according to `schema`.
+    # Parse the JSON payload into typed columns according to ⁠ schema ⁠.
     flights = raw.select(
         from_json(col("value").cast("string"), schema).alias("data")
-    ).select("data.*")
+    ).select("data.*")"""
+    # load without schema so Spark infers the nested struct
+    raw = spark.read.json("data/test_samples.jsonl")
+
+# now "raw" has two columns: "key" (string) and "value" (struct of your real fields)
+# extract the inner struct as your flight rows:
+    flights = raw.select("value.*")
+    # ——— DEBUG: Show raw JSON ingestion ———
+    # print(">>> Raw DataFrame Schema and Sample:")
+    # raw.printSchema()
+    # raw.show(5, truncate=False)
+    # print(f">>> Total records read: {raw.count()}")
 
     # -------------------------
     # 4°) Per-Flight Metrics
@@ -162,6 +173,48 @@ if __name__ == "__main__":
     # 5°) Trajectory-Level (placeholders)
     # -------------------------
     # TODO: risk trend, path clustering, ETA via mapGroupsWithState
+        # -------------------------
+    # 5°) Trajectory‑Level Metrics
+    # -------------------------
+    from pyspark.sql.functions import sum as _sum
+
+    # 5.1) Risk Spike Count: number of times risk_score exceeded 1.5 per flight
+    trajectory_metrics = scored.groupBy("icao24").agg(
+        _sum(when(col("risk_score") > 1.5, 1).otherwise(0))
+            .alias("risk_spike_count")
+    )
+
+        # ——— LOCAL TEST OUTPUT & EXIT ———
+    trajectory_metrics.show(truncate=False)
+    trajectory_metrics \
+        .coalesce(1) \
+        .write \
+        .mode("overwrite") \
+        .csv("local_output/trajectory_metrics", header=True)
+
+    # # stop Spark and exit so we don't hit any writeStream(...) below
+    # spark.stop()
+    # import sys; sys.exit(0)
+
+    # # 5.2) Serialize and write trajectory metrics to console & Kafka
+    # traj_out = trajectory_metrics.select(
+    #     to_json(struct("icao24", "risk_spike_count")).alias("value")
+    # )
+
+    # # console (complete mode shows full aggregated state)
+    # traj_out.writeStream \
+    #     .format("console") \
+    #     .outputMode("complete") \
+    #     .option("truncate", False) \
+    #     .start()
+
+    # # Kafka topic 'flight-trajectory'
+    # traj_out.writeStream \
+    #     .format("kafka") \
+    #     .option("kafka.bootstrap.servers", "localhost:9092") \
+    #     .option("topic", "flight-trajectory") \
+    #     .option("checkpointLocation", "/tmp/spark-checkpoints/flight-trajectory") \
+    #     .start()
 
     # -------------------------
     # 6°) Spatial Aggregates
@@ -208,52 +261,86 @@ if __name__ == "__main__":
     # -------------------------
     # 7°) Temporal / Context / ML (TODO)
     # -------------------------
-    # Trend detection, anomaly scoring, reverse-geocode, weather joins,
-    # streaming k-means for cell-level clustering, etc.
+    
+    # Define rolling window over last 5 entries per aircraft (icao24), ordered by fetch_time.
+    # This window will help compute rolling statistics like average risk.
+    trend_window = Window.partitionBy("icao24").orderBy("fetch_time").rowsBetween(-5, 0)
 
-    # -------------------------
-    # 8°) Output Streams
-    # -------------------------
-    # 8.1) Per-flight metrics → console & Kafka topic 'flight-metrics'
-    per_flight_out = scored.select(
-        to_json(struct(
-            "icao24", "fetch_time", "risk_score",
-            "acceleration", "turn_rate",
-            "alt_stability_idx", "dt_last_contact",
-            "altitude_delta"
-        )).alias("value")
+    # 7.1) Compute Rolling Average Risk Score for each aircraft
+    # This captures the short-term trend of risk levels for each aircraft.
+    scored = scored.withColumn(
+        "avg_risk_recent",
+        avg(col("risk_score")).over(trend_window)
     )
-    per_flight_out.writeStream \
-        .format("console") \
-        .outputMode("append") \
-        .option("truncate", False) \
-        .start()
-    per_flight_out.writeStream \
-        .format("kafka") \
-        .option("kafka.bootstrap.servers", "localhost:9092") \
-        .option("topic", "flight-metrics") \
-        .option("checkpointLocation", "/tmp/spark-checkpoints/flight-metrics") \
-        .start()
 
-    # 8.2) Spatial aggregates → console & Kafka topic 'flight-aggregates'
-    agg_out = agg.select(
-        to_json(struct(
-            col("window.start").alias("window_start"),
-            col("window.end").alias("window_end"),
-            "lat_bin", "lon_bin", "avg_risk", "flight_count"
-        )).alias("value")
+    # 7.2) Detect Anomalies based on sudden spike in risk score
+    # If current risk_score exceeds recent average by more than 0.5, flag it as anomaly (True).
+    # This helps identify sudden dangerous situations.
+    scored = scored.withColumn(
+        "risk_anomaly",
+        when(col("risk_score") > col("avg_risk_recent") + 0.5, lit(True)).otherwise(lit(False))
     )
-    agg_out.writeStream \
-        .format("console") \
-        .outputMode("update") \
-        .option("truncate", False) \
-        .start()
-    agg_out.writeStream \
-        .format("kafka") \
-        .option("kafka.bootstrap.servers", "localhost:9092") \
-        .option("topic", "flight-aggregates") \
-        .option("checkpointLocation", "/tmp/spark-checkpoints/flight-aggregates-v2") \
-        .start()
+    
+       # ——— LOCAL BATCH TEST OUTPUT ———
+    # 1) Show trajectory‑level risk_spike_count (TODO 5)
+    trajectory_metrics.show(truncate=False)
 
-    # 8.3) Block until termination of streaming queries
-    spark.streams.awaitAnyTermination()
+    # 2) Show anomaly detection (TODO 7)
+    scored.select(
+        "icao24",
+        "fetch_time",
+        "risk_score",
+        "avg_risk_recent",
+        "risk_anomaly"
+    ).orderBy("icao24","fetch_time").show(truncate=False)
+
+    # 3) Exit before any streaming code
+    spark.stop()
+    import sys; sys.exit(0)
+    
+    # # -------------------------
+    # # 8°) Output Streams
+    # # -------------------------
+    # # 8.1) Per-flight metrics → console & Kafka topic 'flight-metrics'
+    # per_flight_out = scored.select(
+    #     to_json(struct(
+    #         "icao24", "fetch_time", "risk_score",
+    #         "acceleration", "turn_rate",
+    #         "alt_stability_idx", "dt_last_contact",
+    #         "altitude_delta"
+    #     )).alias("value")
+    # )
+    # per_flight_out.writeStream \
+    #     .format("console") \
+    #     .outputMode("append") \
+    #     .option("truncate", False) \
+    #     .start()
+    # per_flight_out.writeStream \
+    #     .format("kafka") \
+    #     .option("kafka.bootstrap.servers", "localhost:9092") \
+    #     .option("topic", "flight-metrics") \
+    #     .option("checkpointLocation", "/tmp/spark-checkpoints/flight-metrics") \
+    #     .start()
+
+    # # 8.2) Spatial aggregates → console & Kafka topic 'flight-aggregates'
+    # agg_out = agg.select(
+    #     to_json(struct(
+    #         col("window.start").alias("window_start"),
+    #         col("window.end").alias("window_end"),
+    #         "lat_bin", "lon_bin", "avg_risk", "flight_count"
+    #     )).alias("value")
+    # )
+    # agg_out.writeStream \
+    #     .format("console") \
+    #     .outputMode("update") \
+    #     .option("truncate", False) \
+    #     .start()
+    # agg_out.writeStream \
+    #     .format("kafka") \
+    #     .option("kafka.bootstrap.servers", "localhost:9092") \
+    #     .option("topic", "flight-aggregates") \
+    #     .option("checkpointLocation", "/tmp/spark-checkpoints/flight-aggregates-v2") \
+    #     .start()
+
+    # # 8.3) Block until termination of streaming queries
+    # spark.streams.awaitAnyTermination()

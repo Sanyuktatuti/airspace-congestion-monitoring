@@ -1,2 +1,5 @@
 temp/*
 data/*
+spark/__pycache__
+local_output/*
+.DS_Store
