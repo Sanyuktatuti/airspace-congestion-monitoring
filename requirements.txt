@@ -15,4 +15,4 @@ influxdb-client>=1.33.0
 # (Optional) Dashboard backend if you build one in Python
 flask>=2.2.2
 
-python-dotenv>=0.21.0
+python-dotenv>=0.21.0kafka-python

@@ -5,6 +5,10 @@
 # This module connects Kafka → Spark Structured Streaming,
 # applies per-flight risk & derived metrics (via risk_model.py),
 # computes spatial aggregates, and writes results back to Kafka and console.
+import os, sys
+# add the project root to python’s search path so "import spark.risk_model" works
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import (
@@ -94,7 +98,7 @@ if __name__ == "__main__":
         from_json(col("value").cast("string"), schema).alias("data")
     ).select("data.*")
 
-    # -------------------------
+   # -------------------------
     # 4°) Per-Flight Metrics
     # -------------------------
     # 4.1) Risk Score: combines speed and climb/descent risk into [0,2]
@@ -107,38 +111,39 @@ if __name__ == "__main__":
         )
     )
 
-    # Define time-ordered window per flight (ICAO) for lag & rolling stats.
-    flight_win = Window.partitionBy("icao24").orderBy("fetch_time")
+    # ── Temporarily disable LAG‐based metrics (unsupported in pure streaming) ──
+    # from pyspark.sql.window import Window
+    # flight_win = Window.partitionBy("icao24").orderBy("fetch_time")
 
-    # 4.2) Acceleration a_t = (v_t - v_{t-1}) / Δt  [m/s²]
-    scored = scored.withColumn(
-        "acceleration",
-        compute_acceleration(
-            col("velocity"),
-            col("fetch_time"),
-            flight_win
-        )
-    )
+    # # 4.2) Acceleration a_t = (v_t - v_{t-1}) / Δt  [m/s²]
+    # scored = scored.withColumn(
+    #     "acceleration",
+    #     compute_acceleration(
+    #         col("velocity"),
+    #         col("fetch_time"),
+    #         flight_win
+    #     )
+    # )
 
-    # 4.3) Turn Rate ω_t = (θ_t - θ_{t-1}) / Δt  [deg/s]
-    scored = scored.withColumn(
-        "turn_rate",
-        compute_turn_rate(
-            col("true_track"),
-            col("fetch_time"),
-            flight_win
-        )
-    )
+    # # 4.3) Turn Rate ω_t = (θ_t - θ_{t-1}) / Δt  [deg/s]
+    # scored = scored.withColumn(
+    #     "turn_rate",
+    #     compute_turn_rate(
+    #         col("true_track"),
+    #         col("fetch_time"),
+    #         flight_win
+    #     )
+    # )
 
-    # 4.4) Altitude Stability Index = rolling stddev(baro_altitude) over last 6 samples [m]
-    scored = scored.withColumn(
-        "alt_stability_idx",
-        compute_alt_stability(
-            col("baro_altitude"),
-            flight_win,
-            lookback=5  # includes current + previous 5 rows
-        )
-    )
+    # # 4.4) Altitude Stability Index = rolling stddev(baro_altitude) over last 6 samples [m]
+    # scored = scored.withColumn(
+    #     "alt_stability_idx",
+    #     compute_alt_stability(
+    #         col("baro_altitude"),
+    #         flight_win,
+    #         lookback=5
+    #     )
+    # )
 
     # 4.5) Time Since Last Contact Δt_contact = (fetch_time - last_contact)/1000  [s]
     scored = scored.withColumn(
@@ -157,6 +162,7 @@ if __name__ == "__main__":
             col("baro_altitude")
         )
     )
+
 
     # -------------------------
     # 5°) Trajectory-Level (placeholders)
@@ -212,22 +218,25 @@ if __name__ == "__main__":
     # streaming k-means for cell-level clustering, etc.
 
     # -------------------------
-    # 8°) Output Streams
+    # 8.1) Per-Flight OUTPUT (console + Kafka)
     # -------------------------
-    # 8.1) Per-flight metrics → console & Kafka topic 'flight-metrics'
+    # Only emit the columns we’ve actually computed above:
     per_flight_out = scored.select(
-        to_json(struct(
-            "icao24", "fetch_time", "risk_score",
-            "acceleration", "turn_rate",
-            "alt_stability_idx", "dt_last_contact",
-            "altitude_delta"
-        )).alias("value")
-    )
+       to_json(struct(
+           "icao24",
+           "fetch_time",
+           "risk_score",
+           "dt_last_contact",
+           "altitude_delta"
+       )).alias("value")
+   )
+
     per_flight_out.writeStream \
         .format("console") \
         .outputMode("append") \
         .option("truncate", False) \
         .start()
+
     per_flight_out.writeStream \
         .format("kafka") \
         .option("kafka.bootstrap.servers", "localhost:9092") \
