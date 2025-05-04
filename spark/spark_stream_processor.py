@@ -222,13 +222,10 @@ if __name__ == "__main__":
     # 6.1) Convert fetch_time (ms) → Timestamp for windowing operations
     with_ts = scored.withColumn(
         "event_ts",
-        expr("CAST(fetch_time/1000 AS TIMESTAMP)")  # convert ms→s then to Timestamp
+        expr("CAST(fetch_time/1000 AS TIMESTAMP)")  # ms→s then to TimestampType
     )
 
-    # 6.2) Compute grid cell indices:
-    #      lat_bin = floor((latitude + 90) / GRID_SIZE)
-    #      lon_bin = floor((longitude + 180) / GRID_SIZE)
-    #      alt_band categorizes altitudes into low/mid/high bands
+    # 6.2) Compute grid cell indices + altitude band
     binned = with_ts \
         .withColumn(
             "lat_bin",
@@ -240,23 +237,55 @@ if __name__ == "__main__":
         ) \
         .withColumn(
             "alt_band",
-            when(col("baro_altitude") < 10000, lit("low"))   # below 10k m
-            .when(col("baro_altitude") > 30000, lit("high")) # above 30k m
-            .otherwise(lit("mid"))                             # between
+            when(col("baro_altitude") < 10000, lit("low"))   # below 10 000 m
+            .when(col("baro_altitude") > 30000, lit("high")) # above 30 000 m
+            .otherwise(lit("mid"))                            # between
         )
 
-    # 6.3) Aggregate per 10s tumbling window + spatial cell
-    # Watermark of 5s prevents unbounded state for late data
+    # 6.3) Base 10s tumbling window + spatial cell aggregation
     agg = binned \
         .withWatermark("event_ts", "5 seconds") \
         .groupBy(
-            window(col("event_ts"), "10 seconds"),  # tumbling window
+            window(col("event_ts"), "10 seconds"),  # tumbling window slices
             col("lat_bin"), col("lon_bin")
         ) \
         .agg(
             avg("risk_score").alias("avg_risk"),
             count("icao24").alias("flight_count")
         )
+
+    # ── 6.4) Altitude-Band Occupancy ──────────────────────────────────────────
+    # Count & mean risk per altitude band in each 10 s window
+    occupancy = binned \
+        .groupBy(
+            window(col("event_ts"), "10 seconds"),  # tumbling 10 s slices
+            col("alt_band")
+        ) \
+        .agg(
+            count("icao24").alias("band_count"),
+            avg("risk_score").alias("band_avg_risk")
+        ) \
+        .select(
+            col("window.start").alias("window_start"),
+            col("window.end").alias("window_end"),
+            col("alt_band"),
+            col("band_count"),
+            col("band_avg_risk")
+        )
+
+    # ——— LOCAL TEST OUTPUT & PERSIST ———
+    print(">>> Altitude-Band Occupancy per 10s window:")
+    occupancy.orderBy("window_start", "alt_band").show(truncate=False)
+
+    occupancy \
+        .coalesce(1) \
+        .write \
+        .mode("overwrite") \
+        .csv(
+            "local_output/altitude_band_occupancy",
+            header=True
+        )
+
 
     # -------------------------
     # 7°) Temporal / Context / ML (TODO)
