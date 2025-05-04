@@ -327,49 +327,67 @@ if __name__ == "__main__":
     spark.stop()
     import sys; sys.exit(0)
     
-    # # -------------------------
-    # # 8°) Output Streams
-    # # -------------------------
-    # # 8.1) Per-flight metrics → console & Kafka topic 'flight-metrics'
-    # per_flight_out = scored.select(
-    #     to_json(struct(
-    #         "icao24", "fetch_time", "risk_score",
-    #         "acceleration", "turn_rate",
-    #         "alt_stability_idx", "dt_last_contact",
-    #         "altitude_delta"
-    #     )).alias("value")
-    # )
-    # per_flight_out.writeStream \
-    #     .format("console") \
-    #     .outputMode("append") \
-    #     .option("truncate", False) \
-    #     .start()
-    # per_flight_out.writeStream \
-    #     .format("kafka") \
-    #     .option("kafka.bootstrap.servers", "localhost:9092") \
-    #     .option("topic", "flight-metrics") \
-    #     .option("checkpointLocation", "/tmp/spark-checkpoints/flight-metrics") \
-    #     .start()
+        # -------------------------
+    # 8°) Output Streams
+    # -------------------------
 
-    # # 8.2) Spatial aggregates → console & Kafka topic 'flight-aggregates'
-    # agg_out = agg.select(
-    #     to_json(struct(
-    #         col("window.start").alias("window_start"),
-    #         col("window.end").alias("window_end"),
-    #         "lat_bin", "lon_bin", "avg_risk", "flight_count"
-    #     )).alias("value")
-    # )
-    # agg_out.writeStream \
-    #     .format("console") \
-    #     .outputMode("update") \
-    #     .option("truncate", False) \
-    #     .start()
-    # agg_out.writeStream \
-    #     .format("kafka") \
-    #     .option("kafka.bootstrap.servers", "localhost:9092") \
-    #     .option("topic", "flight-aggregates") \
-    #     .option("checkpointLocation", "/tmp/spark-checkpoints/flight-aggregates-v2") \
-    #     .start()
+    # 8.1) Per-flight metrics → console & Kafka topic 'flight-metrics'
+    per_flight_out = scored.select(
+        to_json(struct(
+            col("icao24"),
+            col("fetch_time"),
+            col("risk_score"),
+            col("acceleration"),
+            col("turn_rate"),
+            col("alt_stability_idx"),
+            col("dt_last_contact"),
+            col("altitude_delta")
+        )).alias("value")
+    )
 
-    # # 8.3) Block until termination of streaming queries
-    # spark.streams.awaitAnyTermination()
+    # Print every new record to your Spark console
+    per_flight_out.writeStream \
+        .format("console") \
+        .outputMode("append") \
+        .option("truncate", False) \
+        .start()
+
+    # Push the same JSON blobs into the Kafka topic 'flight-metrics'
+    per_flight_out.writeStream \
+        .format("kafka") \
+        .option("kafka.bootstrap.servers", "localhost:9092") \
+        .option("topic", "flight-metrics") \
+        .option("checkpointLocation", "/tmp/spark-checkpoints/flight-metrics") \
+        .start()
+
+
+    # 8.2) Spatial aggregates → console & Kafka topic 'flight-aggregates'
+    agg_out = agg.select(
+        to_json(struct(
+            col("window.start").alias("window_start"),
+            col("window.end").alias("window_end"),
+            col("lat_bin"),
+            col("lon_bin"),
+            col("avg_risk"),
+            col("flight_count")
+        )).alias("value")
+    )
+
+    # Show updated cell-level aggregates on screen
+    agg_out.writeStream \
+        .format("console") \
+        .outputMode("update") \
+        .option("truncate", False) \
+        .start()
+
+    # And send them to Kafka
+    agg_out.writeStream \
+        .format("kafka") \
+        .option("kafka.bootstrap.servers", "localhost:9092") \
+        .option("topic", "flight-aggregates") \
+        .option("checkpointLocation", "/tmp/spark-checkpoints/flight-aggregates") \
+        .start()
+
+
+    # 8.3) Keep the job alive until you hit Ctrl+C
+    spark.streams.awaitAnyTermination()
