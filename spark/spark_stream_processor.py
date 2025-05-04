@@ -184,7 +184,7 @@ if __name__ == "__main__":
             .alias("risk_spike_count")
     )
 
-    # ——— LOCAL TEST OUTPUT & EXIT ———
+        # ——— LOCAL TEST OUTPUT & EXIT ———
     trajectory_metrics.show(truncate=False)
     trajectory_metrics \
         .coalesce(1) \
@@ -192,29 +192,29 @@ if __name__ == "__main__":
         .mode("overwrite") \
         .csv("local_output/trajectory_metrics", header=True)
 
-    # stop Spark and exit so we don't hit any writeStream(...) below
-    spark.stop()
-    import sys; sys.exit(0)
+    # # stop Spark and exit so we don't hit any writeStream(...) below
+    # spark.stop()
+    # import sys; sys.exit(0)
 
-    # 5.2) Serialize and write trajectory metrics to console & Kafka
-    traj_out = trajectory_metrics.select(
-        to_json(struct("icao24", "risk_spike_count")).alias("value")
-    )
+    # # 5.2) Serialize and write trajectory metrics to console & Kafka
+    # traj_out = trajectory_metrics.select(
+    #     to_json(struct("icao24", "risk_spike_count")).alias("value")
+    # )
 
-    # console (complete mode shows full aggregated state)
-    traj_out.writeStream \
-        .format("console") \
-        .outputMode("complete") \
-        .option("truncate", False) \
-        .start()
+    # # console (complete mode shows full aggregated state)
+    # traj_out.writeStream \
+    #     .format("console") \
+    #     .outputMode("complete") \
+    #     .option("truncate", False) \
+    #     .start()
 
-    # Kafka topic 'flight-trajectory'
-    traj_out.writeStream \
-        .format("kafka") \
-        .option("kafka.bootstrap.servers", "localhost:9092") \
-        .option("topic", "flight-trajectory") \
-        .option("checkpointLocation", "/tmp/spark-checkpoints/flight-trajectory") \
-        .start()
+    # # Kafka topic 'flight-trajectory'
+    # traj_out.writeStream \
+    #     .format("kafka") \
+    #     .option("kafka.bootstrap.servers", "localhost:9092") \
+    #     .option("topic", "flight-trajectory") \
+    #     .option("checkpointLocation", "/tmp/spark-checkpoints/flight-trajectory") \
+    #     .start()
 
     # -------------------------
     # 6°) Spatial Aggregates
@@ -281,49 +281,66 @@ if __name__ == "__main__":
         when(col("risk_score") > col("avg_risk_recent") + 0.5, lit(True)).otherwise(lit(False))
     )
     
-    # -------------------------
-    # 8°) Output Streams
-    # -------------------------
-    # 8.1) Per-flight metrics → console & Kafka topic 'flight-metrics'
-    per_flight_out = scored.select(
-        to_json(struct(
-            "icao24", "fetch_time", "risk_score",
-            "acceleration", "turn_rate",
-            "alt_stability_idx", "dt_last_contact",
-            "altitude_delta"
-        )).alias("value")
-    )
-    per_flight_out.writeStream \
-        .format("console") \
-        .outputMode("append") \
-        .option("truncate", False) \
-        .start()
-    per_flight_out.writeStream \
-        .format("kafka") \
-        .option("kafka.bootstrap.servers", "localhost:9092") \
-        .option("topic", "flight-metrics") \
-        .option("checkpointLocation", "/tmp/spark-checkpoints/flight-metrics") \
-        .start()
+       # ——— LOCAL BATCH TEST OUTPUT ———
+    # 1) Show trajectory‑level risk_spike_count (TODO 5)
+    trajectory_metrics.show(truncate=False)
 
-    # 8.2) Spatial aggregates → console & Kafka topic 'flight-aggregates'
-    agg_out = agg.select(
-        to_json(struct(
-            col("window.start").alias("window_start"),
-            col("window.end").alias("window_end"),
-            "lat_bin", "lon_bin", "avg_risk", "flight_count"
-        )).alias("value")
-    )
-    agg_out.writeStream \
-        .format("console") \
-        .outputMode("update") \
-        .option("truncate", False) \
-        .start()
-    agg_out.writeStream \
-        .format("kafka") \
-        .option("kafka.bootstrap.servers", "localhost:9092") \
-        .option("topic", "flight-aggregates") \
-        .option("checkpointLocation", "/tmp/spark-checkpoints/flight-aggregates-v2") \
-        .start()
+    # 2) Show anomaly detection (TODO 7)
+    scored.select(
+        "icao24",
+        "fetch_time",
+        "risk_score",
+        "avg_risk_recent",
+        "risk_anomaly"
+    ).orderBy("icao24","fetch_time").show(truncate=False)
 
-    # 8.3) Block until termination of streaming queries
-    spark.streams.awaitAnyTermination()
+    # 3) Exit before any streaming code
+    spark.stop()
+    import sys; sys.exit(0)
+    
+    # # -------------------------
+    # # 8°) Output Streams
+    # # -------------------------
+    # # 8.1) Per-flight metrics → console & Kafka topic 'flight-metrics'
+    # per_flight_out = scored.select(
+    #     to_json(struct(
+    #         "icao24", "fetch_time", "risk_score",
+    #         "acceleration", "turn_rate",
+    #         "alt_stability_idx", "dt_last_contact",
+    #         "altitude_delta"
+    #     )).alias("value")
+    # )
+    # per_flight_out.writeStream \
+    #     .format("console") \
+    #     .outputMode("append") \
+    #     .option("truncate", False) \
+    #     .start()
+    # per_flight_out.writeStream \
+    #     .format("kafka") \
+    #     .option("kafka.bootstrap.servers", "localhost:9092") \
+    #     .option("topic", "flight-metrics") \
+    #     .option("checkpointLocation", "/tmp/spark-checkpoints/flight-metrics") \
+    #     .start()
+
+    # # 8.2) Spatial aggregates → console & Kafka topic 'flight-aggregates'
+    # agg_out = agg.select(
+    #     to_json(struct(
+    #         col("window.start").alias("window_start"),
+    #         col("window.end").alias("window_end"),
+    #         "lat_bin", "lon_bin", "avg_risk", "flight_count"
+    #     )).alias("value")
+    # )
+    # agg_out.writeStream \
+    #     .format("console") \
+    #     .outputMode("update") \
+    #     .option("truncate", False) \
+    #     .start()
+    # agg_out.writeStream \
+    #     .format("kafka") \
+    #     .option("kafka.bootstrap.servers", "localhost:9092") \
+    #     .option("topic", "flight-aggregates") \
+    #     .option("checkpointLocation", "/tmp/spark-checkpoints/flight-aggregates-v2") \
+    #     .start()
+
+    # # 8.3) Block until termination of streaming queries
+    # spark.streams.awaitAnyTermination()
