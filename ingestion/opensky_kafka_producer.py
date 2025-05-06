@@ -1,259 +1,262 @@
-# spark/spark_stream_processor.py
-# -------------------------
-# Airspace Congestion Streaming Processor with Enhanced Commentary
-# -------------------------
-# This module connects Kafka → Spark Structured Streaming,
-# applies per-flight risk & derived metrics (via risk_model.py),
-# computes spatial aggregates, and writes results back to Kafka and console.
+#!/usr/bin/env python3
+"""
+opensky_kafka_producer.py
 
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import (
-    from_json, col, to_json, struct,
-    floor, window, avg, count,
-    when, lit, expr
-)
-from pyspark.sql.types import (
-    StructType, StructField, StringType, DoubleType,
-    BooleanType, LongType, ArrayType, MapType
-)
-from pyspark.sql.window import Window
+Fetches real-time state vector data from the OpenSky API, enriches
+with static aircraft metadata, and publishes messages to a Kafka topic.
+"""
+import time
+import json
+import csv
+import logging
+import requests
+import os
+import random
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from kafka import KafkaProducer
+from kafka.errors import KafkaError
 
-# Import pure-function metric calculators
-from spark.risk_model import (
-    compute_risk_score,
-    compute_acceleration,
-    compute_turn_rate,
-    compute_alt_stability,
-    compute_dt_last_contact,
-    compute_altitude_delta
-)
+# Configure logging
+def setup_logging():
+    logging.basicConfig(
+        format='%(asctime)s %(levelname)s: %(message)s',
+        level=logging.INFO
+    )
+    return logging.getLogger("opensky-producer")
 
-# -------------------------
-# 1°) Schema & Constants
-# -------------------------
-# Define the expected JSON schema of incoming messages from Kafka "flight-stream".
-# Each field in StructType maps to a JSON key and enforces type safety in Spark.
-schema = StructType([
-    StructField("icao24", StringType()),       # unique aircraft identifier (hex)
-    StructField("callsign", StringType()),     # flight callsign (string, may include spaces)
-    StructField("origin_country", StringType()),# country of origin for the flight
-    StructField("time_position", LongType()),  # timestamp when position last updated (s since epoch)
-    StructField("last_contact", LongType()),   # timestamp of last contact (s since epoch)
-    StructField("longitude", DoubleType()),    # longitude in degrees East
-    StructField("latitude", DoubleType()),     # latitude in degrees North
-    StructField("baro_altitude", DoubleType()),# barometric altitude in meters
-    StructField("on_ground", BooleanType()),   # true if aircraft on ground
-    StructField("velocity", DoubleType()),     # ground speed in m/s
-    StructField("true_track", DoubleType()),   # heading in degrees (0=N, clockwise)
-    StructField("vertical_rate", DoubleType()),# vertical speed in m/s (positive climb)
-    StructField("sensors", ArrayType(LongType())), # optional sensor IDs list
-    StructField("geo_altitude", DoubleType()), # GPS-based altitude in meters
-    StructField("squawk", StringType()),       # transponder code
-    StructField("spi", BooleanType()),         # special purpose indicator
-    StructField("position_source", StringType()), # source of position data
-    StructField("fetch_time", LongType()),     # ingestion timestamp (ms since epoch)
-    StructField("aircraft", MapType(StringType(), StringType())) # static metadata map
-])
+# Load static aircraft metadata from CSV into a dict
+def load_metadata(csv_path, logger):
+    metadata = {}
+    try:
+        with open(csv_path, newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                metadata[row['icao24'].strip().lower()] = row
+        logger.info(f"Loaded metadata for {len(metadata)} aircraft.")
+    except FileNotFoundError:
+        logger.error(f"Metadata file not found: {csv_path}")
+        logger.warning("Continuing without aircraft metadata")
+    except Exception as e:
+        logger.error(f"Error loading metadata: {e}")
+        logger.warning("Continuing without aircraft metadata")
+    return metadata
 
-# Grid size in degrees for spatial aggregation.
-# A 1.0° cell in lat/lon covers roughly ~111km at equator per degree.
-GRID_SIZE = 1.0
+# Create a session with retry capability
+def create_request_session():
+    session = requests.Session()
+    retries = Retry(
+        total=5,
+        backoff_factor=0.5,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"]
+    )
+    session.mount('https://', HTTPAdapter(max_retries=retries))
+    return session
 
-if __name__ == "__main__":
-    # -------------------------
-    # 2°) SparkSession Setup
-    # -------------------------
-    # Build a SparkSession with Kafka support via spark-sql-kafka package.
-    spark = (
-        SparkSession.builder
-            .appName("AirspaceCongestionStreaming")
-            .config(
-                "spark.jars.packages",
-                "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.5"
+# Fetch live state vectors from OpenSky REST API with retries and rate limiting
+def fetch_states(session, username=None, password=None, logger=None):
+    url = "https://opensky-network.org/api/states/all"
+    auth = None
+    
+    if username and password:
+        auth = (username, password)
+        logger.info("Using authenticated OpenSky API access")
+    
+    try:
+        resp = session.get(url, auth=auth, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("states", []), data.get("time"), None
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 429:
+            logger.warning("Rate limited by OpenSky API (429 error). Backing off.")
+            return [], None, 30  # Suggest 30 second backoff
+        logger.error(f"HTTP Error fetching states: {e}")
+        return [], None, 10
+    except requests.exceptions.ConnectionError as e:
+        logger.error(f"Connection error: {e}")
+        return [], None, 5
+    except requests.exceptions.Timeout as e:
+        logger.error(f"Timeout error: {e}")
+        return [], None, 5
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching states: {e}")
+        return [], None, 3
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON response: {e}")
+        return [], None, 2
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        return [], None, 5
+
+# Normalize and enrich each state vector into a dict
+def enrich_state(state, metadata, fetch_time=None):
+    # these keys match the positions in the OpenSky 'state' array
+    keys = [
+        'icao24', 'callsign', 'origin_country', 'time_position', 'last_contact',
+        'longitude', 'latitude', 'baro_altitude', 'on_ground', 'velocity',
+        'true_track', 'vertical_rate', 'sensors', 'geo_altitude',
+        'squawk', 'spi', 'position_source'
+    ]
+    
+    # Create dict from state array with appropriate keys
+    record = dict(zip(keys, state))
+    
+    # Clean and convert values
+    if record['callsign']:
+        record['callsign'] = record['callsign'].strip()
+    if record['icao24']:
+        record['icao24'] = record['icao24'].strip().lower()
+    
+    # Convert numeric fields from strings to appropriate types
+    for field in ['time_position', 'last_contact']:
+        if record[field]:
+            try:
+                record[field] = int(record[field])
+            except (ValueError, TypeError):
+                record[field] = None
+    
+    for field in ['longitude', 'latitude', 'baro_altitude', 'velocity', 
+                 'true_track', 'vertical_rate', 'geo_altitude']:
+        if record[field]:
+            try:
+                record[field] = float(record[field])
+            except (ValueError, TypeError):
+                record[field] = None
+    
+    # Convert boolean fields
+    if record['on_ground']:
+        record['on_ground'] = bool(record['on_ground'])
+    
+    # stamp with current time in ms
+    record['fetch_time'] = fetch_time if fetch_time else int(time.time() * 1000)
+    
+    # attach any static metadata (or empty dict)
+    meta = metadata.get(record['icao24']) if record['icao24'] else None
+    record['aircraft'] = meta if meta else {}
+    
+    return record
+
+def main():
+    logger = setup_logging()
+
+    # Configuration (can be moved to env vars or config file)
+    METADATA_CSV      = 'data/aircraft_metadata.csv'
+    KAFKA_BOOTSTRAP   = os.environ.get('KAFKA_BOOTSTRAP', 'localhost:9092')
+    TOPIC             = os.environ.get('KAFKA_TOPIC', 'flight-stream')
+    POLL_INTERVAL_SEC = int(os.environ.get('POLL_INTERVAL', 10))  # seconds
+    OPENSKY_USERNAME  = os.environ.get('OPENSKY_USERNAME')
+    OPENSKY_PASSWORD  = os.environ.get('OPENSKY_PASSWORD')
+    
+    logger.info(f"Starting OpenSky Kafka producer with poll interval of {POLL_INTERVAL_SEC}s")
+    logger.info(f"Using Kafka bootstrap servers: {KAFKA_BOOTSTRAP}")
+    logger.info(f"Publishing to topic: {TOPIC}")
+    
+    # Load aircraft metadata
+    metadata = load_metadata(METADATA_CSV, logger)
+    
+    # Create HTTP session for OpenSky API
+    session = create_request_session()
+
+    # Configure and create Kafka producer
+    try:
+        producer = KafkaProducer(
+            bootstrap_servers=KAFKA_BOOTSTRAP,
+            value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+            key_serializer=lambda k: k.encode('utf-8'),
+            retries=5,
+            acks='all',  # Wait for all replicas
+            linger_ms=50,  # Batch messages for 50ms
+            compression_type='gzip'  # Compress messages
+        )
+        logger.info(f"Kafka producer connected to {KAFKA_BOOTSTRAP}, topic '{TOPIC}'")
+    except KafkaError as e:
+        logger.error(f"Failed to connect to Kafka: {e}")
+        return
+
+    # Add jitter to avoid synchronized polling with other instances
+    jitter = random.uniform(0, 1)
+    time.sleep(jitter)
+    
+    consecutive_failures = 0
+    consecutive_empty = 0
+    backoff_time = POLL_INTERVAL_SEC
+
+    try:
+        while True:
+            # Fetch data from OpenSky API
+            start_time = time.time()
+            fetch_time_ms = int(start_time * 1000)
+            
+            states, api_ts, suggested_backoff = fetch_states(
+                session, 
+                OPENSKY_USERNAME, 
+                OPENSKY_PASSWORD, 
+                logger
             )
-            # Force driver to bind to localhost for Kafka metadata
-            .config("spark.driver.bindAddress", "127.0.0.1")
-            .config("spark.driver.host", "127.0.0.1")
-            .getOrCreate()
-    )
-    spark.sparkContext.setLogLevel("WARN")  # suppress verbose INFO logs
+            
+            if suggested_backoff:
+                backoff_time = suggested_backoff
+                logger.info(f"Using suggested backoff time: {backoff_time}s")
+            
+            if not states:
+                consecutive_empty += 1
+                if consecutive_empty >= 3:
+                    logger.warning(f"No state vectors fetched for {consecutive_empty} consecutive polls")
+                    # Increase backoff if we keep getting empty results
+                    backoff_time = min(60, POLL_INTERVAL_SEC * (consecutive_empty // 3))
+                time.sleep(backoff_time)
+                continue
+            
+            consecutive_empty = 0
+            sent = 0
+            failed = 0
+            
+            # Process each flight state
+            for state in states:
+                try:
+                    # Skip states with missing crucial data
+                    if not state[0] or not state[5] or not state[6]:  # icao24, lon, lat
+                        continue
+                        
+                    rec = enrich_state(state, metadata, fetch_time_ms)
+                    key = rec.get('icao24', 'unknown')
+                    
+                    # Send to Kafka (non-blocking)
+                    producer.send(TOPIC, key=key, value=rec)
+                    sent += 1
+                except Exception as e:
+                    logger.error(f"Error processing state {state[0] if state else 'unknown'}: {e}")
+                    failed += 1
+            
+            # Ensure messages are sent
+            producer.flush()
+            
+            # Log statistics
+            elapsed = time.time() - start_time
+            if sent:
+                logger.info(f"Published {sent} messages in {elapsed:.2f}s. Fetch timestamp: {fetch_time_ms}")
+                consecutive_failures = 0
+            
+            if failed:
+                logger.warning(f"Failed to process {failed} messages")
+            
+            # Calculate sleep time to maintain polling interval
+            sleep_time = max(0.1, POLL_INTERVAL_SEC - elapsed)
+            time.sleep(sleep_time)
+            
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested, exiting...")
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        consecutive_failures += 1
+        if consecutive_failures >= 5:
+            logger.critical("Too many consecutive failures, exiting")
+            raise
+    finally:
+        producer.close()
+        logger.info("Producer closed")
 
-    # -------------------------
-    # 3°) Read Raw Stream
-    # -------------------------
-    # Subscribe to Kafka topic 'flight-stream'.  Each record's value is a JSON string.
-    raw = spark.readStream \
-        .format("kafka") \
-        .option("kafka.bootstrap.servers", "localhost:9092") \
-        .option("subscribe", "flight-stream") \
-        .option("startingOffsets", "earliest") \
-        .load()
-
-    # Parse the JSON payload into typed columns according to `schema`.
-    flights = raw.select(
-        from_json(col("value").cast("string"), schema).alias("data")
-    ).select("data.*")
-
-    # -------------------------
-    # 4°) Per-Flight Metrics
-    # -------------------------
-    # 4.1) Risk Score: combines speed and climb/descent risk into [0,2]
-    scored = flights.withColumn(
-        "risk_score",
-        compute_risk_score(
-            col("velocity"),
-            col("vertical_rate"),
-            col("on_ground")
-        )
-    )
-
-    # Define time-ordered window per flight (ICAO) for lag & rolling stats.
-    flight_win = Window.partitionBy("icao24").orderBy("fetch_time")
-
-    # 4.2) Acceleration a_t = (v_t - v_{t-1}) / Δt  [m/s²]
-    scored = scored.withColumn(
-        "acceleration",
-        compute_acceleration(
-            col("velocity"),
-            col("fetch_time"),
-            flight_win
-        )
-    )
-
-    # 4.3) Turn Rate ω_t = (θ_t - θ_{t-1}) / Δt  [deg/s]
-    scored = scored.withColumn(
-        "turn_rate",
-        compute_turn_rate(
-            col("true_track"),
-            col("fetch_time"),
-            flight_win
-        )
-    )
-
-    # 4.4) Altitude Stability Index = rolling stddev(baro_altitude) over last 6 samples [m]
-    scored = scored.withColumn(
-        "alt_stability_idx",
-        compute_alt_stability(
-            col("baro_altitude"),
-            flight_win,
-            lookback=5  # includes current + previous 5 rows
-        )
-    )
-
-    # 4.5) Time Since Last Contact Δt_contact = (fetch_time - last_contact)/1000  [s]
-    scored = scored.withColumn(
-        "dt_last_contact",
-        compute_dt_last_contact(
-            col("fetch_time"),
-            col("last_contact")
-        )
-    )
-
-    # 4.6) Altitude Delta = geo_altitude - baro_altitude  [m]
-    scored = scored.withColumn(
-        "altitude_delta",
-        compute_altitude_delta(
-            col("geo_altitude"),
-            col("baro_altitude")
-        )
-    )
-
-    # -------------------------
-    # 5°) Trajectory-Level (placeholders)
-    # -------------------------
-    # TODO: risk trend, path clustering, ETA via mapGroupsWithState
-
-    # -------------------------
-    # 6°) Spatial Aggregates
-    # -------------------------
-    # 6.1) Convert fetch_time (ms) → Timestamp for windowing operations
-    with_ts = scored.withColumn(
-        "event_ts",
-        expr("CAST(fetch_time/1000 AS TIMESTAMP)")  # convert ms→s then to Timestamp
-    )
-
-    # 6.2) Compute grid cell indices:
-    #      lat_bin = floor((latitude + 90) / GRID_SIZE)
-    #      lon_bin = floor((longitude + 180) / GRID_SIZE)
-    #      alt_band categorizes altitudes into low/mid/high bands
-    binned = with_ts \
-        .withColumn(
-            "lat_bin",
-            floor((col("latitude") + 90.0) / GRID_SIZE)
-        ) \
-        .withColumn(
-            "lon_bin",
-            floor((col("longitude") + 180.0) / GRID_SIZE)
-        ) \
-        .withColumn(
-            "alt_band",
-            when(col("baro_altitude") < 10000, lit("low"))   # below 10k m
-            .when(col("baro_altitude") > 30000, lit("high")) # above 30k m
-            .otherwise(lit("mid"))                             # between
-        )
-
-    # 6.3) Aggregate per 10s tumbling window + spatial cell
-    # Watermark of 5s prevents unbounded state for late data
-    agg = binned \
-        .withWatermark("event_ts", "5 seconds") \
-        .groupBy(
-            window(col("event_ts"), "10 seconds"),  # tumbling window
-            col("lat_bin"), col("lon_bin")
-        ) \
-        .agg(
-            avg("risk_score").alias("avg_risk"),
-            count("icao24").alias("flight_count")
-        )
-
-    # -------------------------
-    # 7°) Temporal / Context / ML (TODO)
-    # -------------------------
-    # Trend detection, anomaly scoring, reverse-geocode, weather joins,
-    # streaming k-means for cell-level clustering, etc.
-
-    # -------------------------
-    # 8°) Output Streams
-    # -------------------------
-    # 8.1) Per-flight metrics → console & Kafka topic 'flight-metrics'
-    per_flight_out = scored.select(
-        to_json(struct(
-            "icao24", "fetch_time", "risk_score",
-            "acceleration", "turn_rate",
-            "alt_stability_idx", "dt_last_contact",
-            "altitude_delta"
-        )).alias("value")
-    )
-    per_flight_out.writeStream \
-        .format("console") \
-        .outputMode("append") \
-        .option("truncate", False) \
-        .start()
-    per_flight_out.writeStream \
-        .format("kafka") \
-        .option("kafka.bootstrap.servers", "localhost:9092") \
-        .option("topic", "flight-metrics") \
-        .option("checkpointLocation", "/tmp/spark-checkpoints/flight-metrics") \
-        .start()
-
-    # 8.2) Spatial aggregates → console & Kafka topic 'flight-aggregates'
-    agg_out = agg.select(
-        to_json(struct(
-            col("window.start").alias("window_start"),
-            col("window.end").alias("window_end"),
-            "lat_bin", "lon_bin", "avg_risk", "flight_count"
-        )).alias("value")
-    )
-    agg_out.writeStream \
-        .format("console") \
-        .outputMode("update") \
-        .option("truncate", False) \
-        .start()
-    agg_out.writeStream \
-        .format("kafka") \
-        .option("kafka.bootstrap.servers", "localhost:9092") \
-        .option("topic", "flight-aggregates") \
-        .option("checkpointLocation", "/tmp/spark-checkpoints/flight-aggregates-v2") \
-        .start()
-
-    # 8.3) Block until termination of streaming queries
-    spark.streams.awaitAnyTermination()
+if __name__ == '__main__':
+    main()
