@@ -1,18 +1,33 @@
-# Ingestion
+# Ingestion & Kafka
 kafka-python>=2.0.2
 requests>=2.28.1
+confluent-kafka>=2.2.0
 
 # Spark Streaming
-pyspark>=3.3.0
+pyspark>=3.5.0
+pyarrow>=7.0.0
+pandas>=1.5.0
+numpy>=1.23.0
 
 # Geospatial analytics
 geopandas>=0.12.2
-apache-sedona>=1.2.0
+
+# HDFS / Storage
+pyarrow>=7.0.0
+pandas>=1.5.0
+fastavro>=1.7.0
 
 # Time-series writes
-influxdb-client>=1.33.0
+influxdb-client>=1.36.0
 
-# (Optional) Dashboard backend if you build one in Python
-flask>=2.2.2
+# Dashboard 
+streamlit>=1.24.1
+plotly>=5.13.0
+pydeck>=0.8.0
+mapbox>=0.18.0
+matplotlib>=3.6.0
 
+# Configuration & utilities
 python-dotenv>=0.21.0
+pytest>=7.3.1
+tqdm>=4.65.0
