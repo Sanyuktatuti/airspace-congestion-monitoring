@@ -1,73 +1,58 @@
+# dashboard/globe_tracker.py
 import streamlit as st
+import pandas as pd
 import json
+import os
 import pydeck as pdk
 
-# Load your JSONL file
-def load_data(file_path):
-    aircraft_data = []
-    with open(file_path, 'r') as f:
-        for line in f:
-            # Parse each line of JSONL
-            data = json.loads(line)
-            aircraft_data.append(data['value'])
-    return aircraft_data
+# 1) Figure out the path *streamlit* will run under
+HERE = os.path.dirname(os.path.abspath(__file__))
+DATA_PATH = os.path.join(HERE, os.pardir, "data", "test_samples.jsonl")
 
-# Process the aircraft data to get the top 10 unique aircraft
-def get_top_10_aircraft(aircraft_data):
-    unique_aircraft = {}
-    for entry in aircraft_data:
-        key = entry['icao24']
-        if key not in unique_aircraft:
-            unique_aircraft[key] = entry
-    return list(unique_aircraft.values())[:10]  # Top 10 unique aircraft
+st.title("✈️ Aircraft Movement Tracker")
 
-# Set up the initial view for the globe based on the aircraft's location
-def get_view_state(aircraft_data):
-    latitudes = [point["latitude"] for point in aircraft_data]
-    longitudes = [point["longitude"] for point in aircraft_data]
-    return pdk.ViewState(
-        latitude=sum(latitudes) / len(latitudes),
-        longitude=sum(longitudes) / len(longitudes),
-        zoom=3,
-        pitch=45
-    )
+st.write(f"Loading `{DATA_PATH}` …")
+# 2) Load into a DataFrame
+records = []
+with open(DATA_PATH, "r") as f:
+    for line in f:
+        obj = json.loads(line)
+        # obj["value"] is your struct
+        v = obj["value"]
+        # and we only need icao24, latitude, longitude for now
+        records.append({
+            "icao24": v["icao24"],
+            "lat": v["latitude"],
+            "lon": v["longitude"],
+        })
 
-# Create the scatterplot layer for aircraft on the globe
-def create_aircraft_layer(aircraft_data):
-    return pdk.Layer(
-        "ScatterplotLayer",
-        data=aircraft_data,
-        get_position="[longitude, latitude]",
-        get_fill_color="[255, 140, 0, 160]",
-        get_radius=30000,
-        pickable=True
-    )
+df = pd.DataFrame(records)
+st.write(f"Loaded {len(df):,} records")
 
-# Streamlit app
-def main():
-    st.title('Aircraft Movement Tracker')
-    
-    # Path to your JSONL file
-    file_path = 'data/test_samples.jsonl'
-    
-    # Load and process the data
-    aircraft_data = load_data(file_path)
-    top_10_aircraft = get_top_10_aircraft(aircraft_data)
+# 3) Pick top 10 unique aircraft
+top10 = df.drop_duplicates("icao24").head(10)
+st.write("### 🔢 Top 10 unique aircraft")
+st.dataframe(top10)
 
-    # Create the view state for the globe
-    view_state = get_view_state(top_10_aircraft)
+# 4) Try the built-in Streamlit map
+st.write("### 🗺️ Quick smoke-test with `st.map`")
+st.map(top10)
 
-    # Create the layer for the aircraft
-    aircraft_layer = create_aircraft_layer(top_10_aircraft)
-
-    # Create the deck and render the globe
-    deck = pdk.Deck(
-        layers=[aircraft_layer],
-        initial_view_state=view_state,
-        map_style="mapbox://styles/mapbox/satellite-v9"
-    )
-    
-    st.pydeck_chart(deck)
-
-if __name__ == '__main__':
-    main()
+# 5) If that works, hop into PyDeck
+st.write("### 🛰️ PyDeck Globe with ScatterplotLayer")
+view = pdk.ViewState(
+    latitude=top10["lat"].mean(),
+    longitude=top10["lon"].mean(),
+    zoom=2,
+    pitch=30
+)
+layer = pdk.Layer(
+    "ScatterplotLayer",
+    data=top10,
+    get_position=["lon", "lat"],
+    get_fill_color=[255, 140, 0, 180],
+    get_radius=50000,
+    pickable=True,
+)
+deck = pdk.Deck(layers=[layer], initial_view_state=view)
+st.pydeck_chart(deck)

@@ -15,7 +15,7 @@ def safe_deserialize(b):
 c = KafkaConsumer(
     'flight-stream',  # change to flight-scores or flight-aggregates as needed
     bootstrap_servers='localhost:9092',
-    auto_offset_reset='earliest',
+    auto_offset_reset='latest',
     key_deserializer=lambda b: b.decode() if b else None,
     value_deserializer=safe_deserialize,
 )
