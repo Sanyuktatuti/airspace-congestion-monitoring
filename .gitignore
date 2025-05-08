@@ -2,6 +2,15 @@ temp/*
 # Include data files that are tracked by Git LFS
 data/*
 !data/*.jsonl
+# Python bytecode files
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/**/__pycache__/
+.venv/**/*.pyc
 spark/__pycache__
+dashboard/__pycache__
+ingestion/__pycache__
+storage/__pycache__
 local_output/*
 .DS_Store
