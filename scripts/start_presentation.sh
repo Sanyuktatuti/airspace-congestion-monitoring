@@ -18,6 +18,10 @@ function echo_success() {
     echo -e "\e[1;32m$1\e[0m"
 }
 
+# Set Java home for Spark
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17
+export SPARK_HOME=$(python -c "import pyspark; print(pyspark.__path__[0])")
+
 # Check if a port is in use and kill the process if needed
 function check_and_free_port() {
     local port=$1
