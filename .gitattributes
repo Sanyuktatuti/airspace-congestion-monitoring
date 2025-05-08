@@ -1,5 +1,5 @@
-data/*.jsonl filter=lfs diff=lfs merge=lfs -text
-venv/**/*.jar filter=lfs diff=lfs merge=lfs -text
-venv/**/*.dylib filter=lfs diff=lfs merge=lfs -text
 .venv/**/*.jar filter=lfs diff=lfs merge=lfs -text
 .venv/**/*.dylib filter=lfs diff=lfs merge=lfs -text
+venv/**/*.jar filter=lfs diff=lfs merge=lfs -text
+venv/**/*.dylib filter=lfs diff=lfs merge=lfs -text
+data/*.jsonl filter=lfs diff=lfs merge=lfs -text
