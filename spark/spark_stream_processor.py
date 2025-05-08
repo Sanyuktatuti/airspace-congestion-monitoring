@@ -19,7 +19,14 @@ from pyspark.sql.types import (
 from pyspark.sql.window import Window
 
 import os
-os.makedirs("/tmp/spark-checkpoints", exist_ok=True)
+import time
+from datetime import datetime
+
+# Create a unique checkpoint directory with timestamp
+timestamp = int(time.time())
+checkpoint_root = f"/tmp/spark-checkpoints-{timestamp}"
+os.makedirs(checkpoint_root, exist_ok=True)
+print(f"Created new checkpoint directory: {checkpoint_root}")
 
 # Import pure-function metric calculators
 from spark.risk_model import compute_risk_score
@@ -70,6 +77,10 @@ if __name__ == "__main__":
             .config("spark.executor.memory", "2g")  # Increase executor memory
             .config("spark.memory.offHeap.enabled", "true")  # Enable off-heap memory
             .config("spark.memory.offHeap.size", "1g")  # Set off-heap memory size
+            .config("spark.sql.streaming.checkpointLocation", checkpoint_root)
+            .config("spark.sql.shuffle.partitions", "4")  # Reduce partitions for local mode
+            .config("spark.default.parallelism", "4")  # Reduce parallelism for local mode
+            .config("spark.streaming.stopGracefullyOnShutdown", "true")
             .getOrCreate()
     )
     spark.sparkContext.setLogLevel("WARN")
@@ -81,7 +92,8 @@ if __name__ == "__main__":
         .format("kafka") \
         .option("kafka.bootstrap.servers", "localhost:9092") \
         .option("subscribe", "flight-stream") \
-        .option("startingOffsets", "earliest") \
+        .option("startingOffsets", "latest") \
+        .option("failOnDataLoss", "false") \
         .load()
 
     # Parse the JSON payload into typed columns
@@ -287,7 +299,7 @@ if __name__ == "__main__":
         .format("kafka") \
         .option("kafka.bootstrap.servers", "localhost:9092") \
         .option("topic", "flight-metrics") \
-        .option("checkpointLocation", "/tmp/spark-checkpoints/flight-metrics") \
+        .option("checkpointLocation", f"{checkpoint_root}/flight-metrics") \
         .outputMode("append") \
         .start()
     
@@ -307,17 +319,22 @@ if __name__ == "__main__":
         .format("kafka") \
         .option("kafka.bootstrap.servers", "localhost:9092") \
         .option("topic", "flight-aggregates") \
-        .option("checkpointLocation", "/tmp/spark-checkpoints/flight-aggregates") \
+        .option("checkpointLocation", f"{checkpoint_root}/flight-aggregates") \
         .outputMode("update") \
         .start()
     
-    # 7.3) JSON files for dashboard
-    jsonQuery = flightMetricsOutput.writeStream \
-        .format("json") \
-        .option("path", "data/processed") \
-        .option("checkpointLocation", "/tmp/spark-checkpoints/json-writer") \
-        .outputMode("append") \
-        .start()
+    # 7.3) JSON files for dashboard (optional - comment out if not needed)
+    # Disable JSON output to avoid checkpoint issues
+    # jsonQuery = flightMetricsOutput.writeStream \
+    #     .format("json") \
+    #     .option("path", "data/processed") \
+    #     .option("checkpointLocation", f"{checkpoint_root}/json-writer") \
+    #     .outputMode("append") \
+    #     .start()
+    
+    print("All streaming queries started successfully!")
+    print(f"Grid data being published to Kafka topic: flight-aggregates")
+    print(f"Flight metrics being published to Kafka topic: flight-metrics")
     
     # Wait for all queries to terminate
     spark.streams.awaitAnyTermination()
