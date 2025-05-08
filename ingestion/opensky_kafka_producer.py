@@ -129,12 +129,39 @@ def enrich_state(state, metadata, fetch_time=None):
     if record['on_ground']:
         record['on_ground'] = bool(record['on_ground'])
     
-    # stamp with current time in ms
+    # # stamp with current time in ms
+    # record['fetch_time'] = fetch_time if fetch_time else int(time.time() * 1000)
+    
+    # # attach any static metadata (or empty dict)
+    # meta = metadata.get(record['icao24']) if record['icao24'] else None
+    # record['aircraft'] = meta if meta else {}
+    
+    # return record
+        # stamp with current time in ms
     record['fetch_time'] = fetch_time if fetch_time else int(time.time() * 1000)
     
     # attach any static metadata (or empty dict)
     meta = metadata.get(record['icao24']) if record['icao24'] else None
     record['aircraft'] = meta if meta else {}
+    
+    # ── Fill missing numeric fields with zero
+    for field in [
+        'time_position', 'last_contact', 'longitude', 'latitude',
+        'baro_altitude', 'velocity', 'true_track',
+        'vertical_rate', 'geo_altitude', 'fetch_time'
+    ]:
+        if record.get(field) is None:
+            record[field] = 0
+    
+    # ── Fill missing string fields with empty string
+    for field in ['icao24', 'callsign', 'origin_country', 'squawk']:
+        if not record.get(field):
+            record[field] = ""
+    
+    # ── Ensure booleans and enums get defaults
+    record['on_ground'] = bool(record.get('on_ground', False))
+    if record.get('position_source') is None:
+        record['position_source'] = 0
     
     return record
 

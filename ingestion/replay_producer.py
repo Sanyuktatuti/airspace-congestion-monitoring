@@ -30,8 +30,8 @@ def parse_args():
     parser.add_argument(
         '--file', '-f', 
         type=str, 
-        default=str(Path(__file__).parent.parent / "data" / "test_samples.jsonl"),
-        help='Path to JSONL file containing flight data (default: data/test_samples.jsonl)'
+        default=str(Path(__file__).parent.parent / "data" / "test_samplecopy.jsonl"),
+        help='Path to JSONL file containing flight data (default: data/test_samplecopy.jsonl)'
     )
     
     parser.add_argument(

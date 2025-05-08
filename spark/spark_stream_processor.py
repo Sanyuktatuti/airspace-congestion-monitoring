@@ -88,6 +88,18 @@ if __name__ == "__main__":
     flights = raw.select(
         from_json(col("value").cast("string"), schema).alias("data")
     ).select("data.*")
+    # ── fill nulls: numeric→0, strings→"", booleans→False
+    flights = flights \
+        .na.fill(0, subset=[
+            'time_position', 'last_contact', 'longitude',
+            'latitude', 'baro_altitude', 'velocity',
+            'true_track', 'vertical_rate', 'geo_altitude',
+            'fetch_time'
+        ]) \
+        .na.fill("", subset=[
+            'icao24', 'callsign', 'origin_country', 'squawk', 'position_source'
+        ]) \
+        .na.fill(False, subset=['on_ground', 'spi'])
 
     print(">>> Schema of processed flights:")
     flights.printSchema()
