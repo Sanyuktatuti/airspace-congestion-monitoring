@@ -85,7 +85,7 @@ Two storage solutions for different use cases:
 Interactive visualization of flight data:
 
 - **opensky_dashboard.py**: Streamlit-based dashboard showing maps and metrics
-- **Features**: Real-time map, grid heatmap, and flight metrics visualization
+- **Features**: Real-time map, grid heatmap, and flight metrics visualization with historical analytics
 
 ## Prerequisites
 
@@ -113,6 +113,76 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env file to set your tokens and configuration
 ```
+
+## Quick Start with Presentation Scripts
+
+For a streamlined setup and execution, we provide two utility scripts:
+
+### Start the System
+
+```bash
+# Make the script executable
+chmod +x scripts/start_presentation.sh
+
+# Run the script
+./scripts/start_presentation.sh
+```
+
+**What the start script does:**
+
+1. **Environment Setup**:
+
+   - Sets Java home for Spark
+   - Checks for port conflicts (9092, 8086, 8501) and offers to free them
+   - Creates a default `.env` file if none exists
+
+2. **Infrastructure Setup**:
+
+   - Stops and removes existing Docker containers if present
+   - Starts Redpanda (Kafka-compatible) container
+   - Creates required Kafka topics (flight-stream, flight-metrics, flight-aggregates)
+   - Starts InfluxDB container
+   - Configures InfluxDB with organization and bucket
+   - Creates and validates an access token
+   - Updates the `.env` file with the valid token
+
+3. **Application Components**:
+
+   - Starts the data producer (replay_producer.py)
+   - Starts the Spark streaming processor
+   - Starts the InfluxDB writer
+   - Launches the Streamlit dashboard
+
+4. **Health Checks**:
+   - Verifies all components are running
+   - Provides real-time feedback on the startup process
+
+### Stop the System
+
+```bash
+# Make the script executable
+chmod +x scripts/stop_presentation.sh
+
+# Run the script
+./scripts/stop_presentation.sh
+```
+
+**What the stop script does:**
+
+1. **Process Management**:
+
+   - Identifies and stops all running Python processes related to the system
+   - Gracefully terminates processes with timeout before force killing
+   - Cleans up process IDs stored during startup
+
+2. **Cleanup**:
+
+   - Removes temporary Spark checkpoint files
+   - Verifies all processes have been terminated
+
+3. **Docker Cleanup**:
+   - Offers to stop the Docker containers (InfluxDB and Redpanda)
+   - Optionally removes the containers if requested
 
 ### 2. Start Infrastructure (Kafka & InfluxDB)
 
