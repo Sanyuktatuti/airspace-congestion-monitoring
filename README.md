@@ -337,7 +337,7 @@ Here's a simplified workflow to get the system running:
 
      ##OR
 
- 2. **Launch each services individually:**
+   2. **Launch each services individually:**
 
    **Start Infrastructure**:
    ```bash
