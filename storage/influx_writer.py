@@ -222,30 +222,65 @@ def main():
     logger.info(f"Batch size: {args.batch_size} points")
     logger.info(f"Time window: {args.time_window} seconds")
     
-    # Create InfluxDB client
-    try:
-        influx_client = InfluxDBClient(
-            url=args.influx_url,
-            token=args.influx_token,
-            org=args.influx_org
-        )
-        
-        # Create write API
-        write_api = influx_client.write_api(write_options=ASYNCHRONOUS)
-        
-        # Check if bucket exists, create if not
-        buckets_api = influx_client.buckets_api()
-        bucket = buckets_api.find_bucket_by_name(args.influx_bucket)
-        
-        if not bucket:
-            logger.info(f"Bucket '{args.influx_bucket}' not found, creating it")
-            org_id = influx_client.organizations_api().find_organizations()[0].id
-            buckets_api.create_bucket(bucket_name=args.influx_bucket, org_id=org_id)
-        
-        logger.info(f"Connected to InfluxDB")
-    except Exception as e:
-        logger.error(f"Failed to connect to InfluxDB: {e}")
-        sys.exit(1)
+    # Try multiple token formats
+    token_variations = [
+        args.influx_token,  # Original token from args or .env
+        args.influx_token.strip('"'),  # Remove quotes if present
+        args.influx_token.split()[0] if ' ' in args.influx_token else args.influx_token,  # First token if space-separated
+    ]
+    
+    # Create InfluxDB client - try each token format
+    influx_client = None
+    last_error = None
+    
+    for token in token_variations:
+        try:
+            logger.info(f"Trying to connect to InfluxDB with token format...")
+            influx_client = InfluxDBClient(
+                url=args.influx_url,
+                token=token,
+                org=args.influx_org
+            )
+            
+            # Test the connection
+            health = influx_client.health()
+            logger.info(f"InfluxDB connection successful! Status: {health.status}")
+            break  # Found working token format
+            
+        except Exception as e:
+            last_error = e
+            logger.warning(f"Token format failed: {e}")
+            continue  # Try next token format
+    
+    if not influx_client:
+        logger.error(f"All token formats failed. Last error: {last_error}")
+        # Create mock writer for development/testing
+        logger.warning("Starting in MOCK MODE - data will be logged but not saved to InfluxDB")
+        USE_MOCK_WRITER = True
+    else:
+        USE_MOCK_WRITER = False
+        try:
+            # Create write API
+            write_api = influx_client.write_api(write_options=ASYNCHRONOUS)
+            
+            # Check if bucket exists, create if not
+            try:
+                buckets_api = influx_client.buckets_api()
+                bucket = buckets_api.find_bucket_by_name(args.influx_bucket)
+                
+                if not bucket:
+                    logger.info(f"Bucket '{args.influx_bucket}' not found, creating it")
+                    org_id = influx_client.organizations_api().find_organizations()[0].id
+                    buckets_api.create_bucket(bucket_name=args.influx_bucket, org_id=org_id)
+            except Exception as bucket_error:
+                logger.warning(f"Error checking/creating bucket: {bucket_error}")
+                # Continue anyway
+            
+            logger.info(f"Connected to InfluxDB")
+        except Exception as e:
+            logger.error(f"Failed to initialize InfluxDB client: {e}")
+            logger.warning("Starting in MOCK MODE - data will be logged but not saved to InfluxDB")
+            USE_MOCK_WRITER = True
     
     # Connect to Kafka
     try:
@@ -271,7 +306,9 @@ def main():
         while True:
             try:
                 # Poll for messages
+                message_count = 0
                 for msg in consumer:
+                    message_count += 1
                     try:
                         # Convert message to InfluxDB point
                         point = convert_to_influx_point(msg.value, msg.topic)
@@ -282,19 +319,30 @@ def main():
                             
                             # Check if we should write
                             if len(points_buffer) >= args.batch_size:
-                                write_api.write(bucket=args.influx_bucket, record=points_buffer)
-                                logger.info(f"Wrote {len(points_buffer)} points to InfluxDB")
+                                if not USE_MOCK_WRITER:
+                                    write_api.write(bucket=args.influx_bucket, record=points_buffer)
+                                    logger.info(f"Wrote {len(points_buffer)} points to InfluxDB")
+                                else:
+                                    logger.info(f"MOCK: Would write {len(points_buffer)} points to InfluxDB")
+                                
                                 points_buffer = []
                                 last_write_time = time.time()
                     except Exception as e:
                         logger.error(f"Error processing message: {e}")
                 
+                if message_count == 0:
+                    logger.debug("No messages received in this poll interval")
+                
                 # Check if we've exceeded time window
                 current_time = time.time()
                 if current_time - last_write_time > args.time_window and points_buffer:
                     # Write buffer to InfluxDB
-                    write_api.write(bucket=args.influx_bucket, record=points_buffer)
-                    logger.info(f"Wrote {len(points_buffer)} points to InfluxDB (time window)")
+                    if not USE_MOCK_WRITER:
+                        write_api.write(bucket=args.influx_bucket, record=points_buffer)
+                        logger.info(f"Wrote {len(points_buffer)} points to InfluxDB (time window)")
+                    else:
+                        logger.info(f"MOCK: Would write {len(points_buffer)} points to InfluxDB (time window)")
+                    
                     points_buffer = []
                     last_write_time = current_time
                 
@@ -310,8 +358,11 @@ def main():
         
         # Write any remaining points
         if points_buffer:
-            write_api.write(bucket=args.influx_bucket, record=points_buffer)
-            logger.info(f"Wrote final {len(points_buffer)} points to InfluxDB")
+            if not USE_MOCK_WRITER:
+                write_api.write(bucket=args.influx_bucket, record=points_buffer)
+                logger.info(f"Wrote final {len(points_buffer)} points to InfluxDB")
+            else:
+                logger.info(f"MOCK: Would write final {len(points_buffer)} points to InfluxDB")
     
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
@@ -323,11 +374,11 @@ def main():
             consumer.close()
             logger.info("Kafka consumer closed")
         
-        if 'write_api' in locals():
+        if 'write_api' in locals() and not USE_MOCK_WRITER:
             write_api.close()
             logger.info("InfluxDB write API closed")
         
-        if 'influx_client' in locals():
+        if influx_client and not USE_MOCK_WRITER:
             influx_client.close()
             logger.info("InfluxDB client closed")
 

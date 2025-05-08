@@ -1,0 +1,13 @@
+2025-05-07 17:52:10,665 INFO: Starting InfluxDB writer
+2025-05-07 17:52:10,665 INFO: Kafka bootstrap servers: localhost:9092
+2025-05-07 17:52:10,665 INFO: Consuming topics: ['flight-metrics', 'flight-aggregates']
+2025-05-07 17:52:10,665 INFO: InfluxDB URL: http://localhost:8086
+2025-05-07 17:52:10,665 INFO: InfluxDB organization: airspace
+2025-05-07 17:52:10,666 INFO: InfluxDB bucket: flight_metrics
+2025-05-07 17:52:10,666 INFO: Batch size: 100 points
+2025-05-07 17:52:10,666 INFO: Time window: 5 seconds
+2025-05-07 17:52:10,676 ERROR: Failed to connect to InfluxDB: (401)
+Reason: Unauthorized
+HTTP response headers: HTTPHeaderDict({'Content-Type': 'application/json; charset=utf-8', 'X-Influxdb-Build': 'OSS', 'X-Influxdb-Version': 'v2.7.11', 'X-Platform-Error-Code': 'unauthorized', 'Date': 'Wed, 07 May 2025 21:52:10 GMT', 'Content-Length': '55'})
+HTTP response body: {"code":"unauthorized","message":"unauthorized access"}
+

@@ -1,0 +1,123 @@
+2025-05-07 17:52:19,898 INFO: Reading flight data from: /Users/sanyuktatuti/Big-Data-Project/airspace-congestion-monitoring/data/test_samples.jsonl
+2025-05-07 17:52:19,898 INFO: Connecting to Kafka at: localhost:9092
+2025-05-07 17:52:19,898 INFO: Publishing to topic: flight-stream
+2025-05-07 17:52:19,898 INFO: Message delay: 0.1s
+2025-05-07 17:52:19,898 INFO: Batch size: 1
+2025-05-07 17:52:19,901 INFO: <BrokerConnection client_id=kafka-python-producer-1, node_id=bootstrap-0 host=localhost:9092 <connecting> [IPv6 ('::1', 9092, 0, 0)]>: connecting to localhost:9092 [('::1', 9092, 0, 0) IPv6]
+2025-05-07 17:52:19,904 INFO: <BrokerConnection client_id=kafka-python-producer-1, node_id=bootstrap-0 host=localhost:9092 <checking_api_versions_recv> [IPv6 ('::1', 9092, 0, 0)]>: Broker version identified as 2.6
+2025-05-07 17:52:19,904 INFO: <BrokerConnection client_id=kafka-python-producer-1, node_id=bootstrap-0 host=localhost:9092 <connected> [IPv6 ('::1', 9092, 0, 0)]>: Connection complete.
+2025-05-07 17:52:20,033 INFO: Found 690894 records to replay
+2025-05-07 17:52:20,034 INFO: <BrokerConnection client_id=kafka-python-producer-1, node_id=0 host=127.0.0.1:9092 <connecting> [IPv4 ('127.0.0.1', 9092)]>: connecting to 127.0.0.1:9092 [('127.0.0.1', 9092) IPv4]
+2025-05-07 17:52:20,034 INFO: <BrokerConnection client_id=kafka-python-producer-1, node_id=0 host=127.0.0.1:9092 <connected> [IPv4 ('127.0.0.1', 9092)]>: Connection complete.
+2025-05-07 17:52:20,034 INFO: <BrokerConnection client_id=kafka-python-producer-1, node_id=bootstrap-0 host=localhost:9092 <connected> [IPv6 ('::1', 9092, 0, 0)]>: Closing connection. 
+2025-05-07 17:52:25,071 INFO: Sent 48/690894 messages (0.0%) at 9.5 msg/s, ETA: 72502.3s
+2025-05-07 17:52:30,140 INFO: Sent 96/690894 messages (0.0%) at 9.5 msg/s, ETA: 72722.5s
+2025-05-07 17:52:30,558 INFO: Sent 100/690894 messages (0.0%) at 9.5 msg/s, ETA: 72701.9s
+2025-05-07 17:52:35,574 INFO: Sent 148/690894 messages (0.0%) at 9.5 msg/s, ETA: 72533.2s
+2025-05-07 17:52:40,602 INFO: Sent 196/690894 messages (0.0%) at 9.5 msg/s, ETA: 72484.2s
+2025-05-07 17:52:41,021 INFO: Sent 200/690894 messages (0.0%) at 9.5 msg/s, ETA: 72480.3s
+2025-05-07 17:52:46,047 INFO: Sent 248/690894 messages (0.0%) at 9.5 msg/s, ETA: 72443.7s
+2025-05-07 17:52:51,075 INFO: Sent 296/690894 messages (0.0%) at 9.5 msg/s, ETA: 72423.9s
+2025-05-07 17:52:51,502 INFO: Sent 300/690894 messages (0.0%) at 9.5 msg/s, ETA: 72440.7s
+2025-05-07 17:52:56,541 INFO: Sent 348/690894 messages (0.1%) at 9.5 msg/s, ETA: 72442.4s
+2025-05-07 17:53:01,580 INFO: Sent 396/690894 messages (0.1%) at 9.5 msg/s, ETA: 72444.3s
+2025-05-07 17:53:02,003 INFO: Sent 400/690894 messages (0.1%) at 9.5 msg/s, ETA: 72450.3s
+2025-05-07 17:53:07,026 INFO: Sent 448/690894 messages (0.1%) at 9.5 msg/s, ETA: 72424.4s
+2025-05-07 17:53:12,044 INFO: Sent 496/690894 messages (0.1%) at 9.5 msg/s, ETA: 72394.9s
+2025-05-07 17:53:12,467 INFO: Sent 500/690894 messages (0.1%) at 9.5 msg/s, ETA: 72399.1s
+2025-05-07 17:53:17,495 INFO: Sent 548/690894 messages (0.1%) at 9.5 msg/s, ETA: 72387.7s
+2025-05-07 17:53:22,528 INFO: Sent 596/690894 messages (0.1%) at 9.5 msg/s, ETA: 72383.0s
+2025-05-07 17:53:22,950 INFO: Sent 600/690894 messages (0.1%) at 9.5 msg/s, ETA: 72384.6s
+2025-05-07 17:53:28,000 INFO: Sent 648/690894 messages (0.1%) at 9.5 msg/s, ETA: 72398.1s
+2025-05-07 17:53:33,036 INFO: Sent 696/690894 messages (0.1%) at 9.5 msg/s, ETA: 72394.1s
+2025-05-07 17:53:33,463 INFO: Sent 700/690894 messages (0.1%) at 9.5 msg/s, ETA: 72400.8s
+2025-05-07 17:53:38,489 INFO: Sent 748/690894 messages (0.1%) at 9.5 msg/s, ETA: 72387.9s
+2025-05-07 17:53:43,513 INFO: Sent 796/690894 messages (0.1%) at 9.5 msg/s, ETA: 72373.4s
+2025-05-07 17:53:43,936 INFO: Sent 800/690894 messages (0.1%) at 9.5 msg/s, ETA: 72375.5s
+2025-05-07 17:53:48,964 INFO: Sent 848/690894 messages (0.1%) at 9.5 msg/s, ETA: 72365.8s
+2025-05-07 17:53:54,032 INFO: Sent 896/690894 messages (0.1%) at 9.5 msg/s, ETA: 72387.1s
+2025-05-07 17:53:54,442 INFO: Sent 900/690894 messages (0.1%) at 9.5 msg/s, ETA: 72379.0s
+2025-05-07 17:53:59,490 INFO: Sent 948/690894 messages (0.1%) at 9.5 msg/s, ETA: 72384.0s
+2025-05-07 17:54:04,492 INFO: Sent 996/690894 messages (0.1%) at 9.5 msg/s, ETA: 72355.4s
+2025-05-07 17:54:04,906 INFO: Sent 1000/690894 messages (0.1%) at 9.5 msg/s, ETA: 72351.1s
+2025-05-07 17:54:09,928 INFO: Sent 1048/690894 messages (0.2%) at 9.5 msg/s, ETA: 72337.9s
+2025-05-07 17:54:14,941 INFO: Sent 1096/690894 messages (0.2%) at 9.5 msg/s, ETA: 72320.5s
+2025-05-07 17:54:15,364 INFO: Sent 1100/690894 messages (0.2%) at 9.5 msg/s, ETA: 72322.5s
+2025-05-07 17:54:20,370 INFO: Sent 1148/690894 messages (0.2%) at 9.5 msg/s, ETA: 72301.3s
+2025-05-07 17:54:25,464 INFO: Sent 1196/690894 messages (0.2%) at 9.5 msg/s, ETA: 72332.0s
+2025-05-07 17:54:25,879 INFO: Sent 1200/690894 messages (0.2%) at 9.5 msg/s, ETA: 72329.0s
+2025-05-07 17:54:30,958 INFO: Sent 1248/690894 messages (0.2%) at 9.5 msg/s, ETA: 72349.1s
+2025-05-07 17:54:36,016 INFO: Sent 1296/690894 messages (0.2%) at 9.5 msg/s, ETA: 72356.2s
+2025-05-07 17:54:36,434 INFO: Sent 1300/690894 messages (0.2%) at 9.5 msg/s, ETA: 72354.8s
+2025-05-07 17:54:41,479 INFO: Sent 1348/690894 messages (0.2%) at 9.5 msg/s, ETA: 72354.2s
+2025-05-07 17:54:46,550 INFO: Sent 1396/690894 messages (0.2%) at 9.5 msg/s, ETA: 72365.8s
+2025-05-07 17:54:46,964 INFO: Sent 1400/690894 messages (0.2%) at 9.5 msg/s, ETA: 72362.5s
+2025-05-07 17:54:52,011 INFO: Sent 1448/690894 messages (0.2%) at 9.5 msg/s, ETA: 72362.0s
+2025-05-07 17:54:57,026 INFO: Sent 1496/690894 messages (0.2%) at 9.5 msg/s, ETA: 72346.7s
+2025-05-07 17:54:57,452 INFO: Sent 1500/690894 messages (0.2%) at 9.5 msg/s, ETA: 72349.0s
+2025-05-07 17:55:02,481 INFO: Sent 1548/690894 messages (0.2%) at 9.5 msg/s, ETA: 72340.4s
+2025-05-07 17:55:07,488 INFO: Sent 1596/690894 messages (0.2%) at 9.5 msg/s, ETA: 72322.0s
+2025-05-07 17:55:07,900 INFO: Sent 1600/690894 messages (0.2%) at 9.5 msg/s, ETA: 72318.4s
+2025-05-07 17:55:12,932 INFO: Sent 1648/690894 messages (0.2%) at 9.5 msg/s, ETA: 72311.8s
+2025-05-07 17:55:17,958 INFO: Sent 1696/690894 messages (0.2%) at 9.5 msg/s, ETA: 72302.5s
+2025-05-07 17:55:18,387 INFO: Sent 1700/690894 messages (0.2%) at 9.5 msg/s, ETA: 72306.1s
+2025-05-07 17:55:23,405 INFO: Sent 1748/690894 messages (0.3%) at 9.5 msg/s, ETA: 72293.8s
+2025-05-07 17:55:28,431 INFO: Sent 1796/690894 messages (0.3%) at 9.5 msg/s, ETA: 72285.4s
+2025-05-07 17:55:28,846 INFO: Sent 1800/690894 messages (0.3%) at 9.5 msg/s, ETA: 72283.2s
+2025-05-07 17:55:33,886 INFO: Sent 1848/690894 messages (0.3%) at 9.5 msg/s, ETA: 72280.0s
+2025-05-07 17:55:38,899 INFO: Sent 1896/690894 messages (0.3%) at 9.5 msg/s, ETA: 72266.9s
+2025-05-07 17:55:39,316 INFO: Sent 1900/690894 messages (0.3%) at 9.5 msg/s, ETA: 72265.5s
+2025-05-07 17:55:44,366 INFO: Sent 1948/690894 messages (0.3%) at 9.5 msg/s, ETA: 72265.8s
+2025-05-07 17:55:49,402 INFO: Sent 1996/690894 messages (0.3%) at 9.5 msg/s, ETA: 72261.4s
+2025-05-07 17:55:49,820 INFO: Sent 2000/690894 messages (0.3%) at 9.5 msg/s, ETA: 72260.5s
+2025-05-07 17:55:54,865 INFO: Sent 2048/690894 messages (0.3%) at 9.5 msg/s, ETA: 72258.8s
+2025-05-07 17:55:59,900 INFO: Sent 2096/690894 messages (0.3%) at 9.5 msg/s, ETA: 72253.8s
+2025-05-07 17:56:00,327 INFO: Sent 2100/690894 messages (0.3%) at 9.5 msg/s, ETA: 72255.6s
+2025-05-07 17:56:05,330 INFO: Sent 2148/690894 messages (0.3%) at 9.5 msg/s, ETA: 72240.3s
+2025-05-07 17:56:10,362 INFO: Sent 2196/690894 messages (0.3%) at 9.5 msg/s, ETA: 72234.4s
+2025-05-07 17:56:10,780 INFO: Sent 2200/690894 messages (0.3%) at 9.5 msg/s, ETA: 72233.5s
+2025-05-07 17:56:15,885 INFO: Sent 2249/690894 messages (0.3%) at 9.5 msg/s, ETA: 72217.9s
+2025-05-07 17:56:20,890 INFO: Sent 2297/690894 messages (0.3%) at 9.5 msg/s, ETA: 72204.3s
+2025-05-07 17:56:21,202 INFO: Sent 2300/690894 messages (0.3%) at 9.5 msg/s, ETA: 72203.1s
+2025-05-07 17:56:26,238 INFO: Sent 2348/690894 messages (0.3%) at 9.5 msg/s, ETA: 72199.1s
+2025-05-07 17:56:31,308 INFO: Sent 2396/690894 messages (0.3%) at 9.5 msg/s, ETA: 72204.6s
+2025-05-07 17:56:31,721 INFO: Sent 2400/690894 messages (0.3%) at 9.5 msg/s, ETA: 72202.2s
+2025-05-07 17:56:36,817 INFO: Sent 2449/690894 messages (0.4%) at 9.5 msg/s, ETA: 72185.1s
+2025-05-07 17:56:41,832 INFO: Sent 2497/690894 messages (0.4%) at 9.5 msg/s, ETA: 72175.2s
+2025-05-07 17:56:42,142 INFO: Sent 2500/690894 messages (0.4%) at 9.5 msg/s, ETA: 72173.5s
+2025-05-07 17:56:47,158 INFO: Sent 2548/690894 messages (0.4%) at 9.5 msg/s, ETA: 72164.2s
+2025-05-07 17:56:52,189 INFO: Sent 2596/690894 messages (0.4%) at 9.5 msg/s, ETA: 72158.7s
+2025-05-07 17:56:52,601 INFO: Sent 2600/690894 messages (0.4%) at 9.5 msg/s, ETA: 72156.4s
+2025-05-07 17:56:57,621 INFO: Sent 2648/690894 messages (0.4%) at 9.5 msg/s, ETA: 72148.4s
+2025-05-07 17:57:02,651 INFO: Sent 2696/690894 messages (0.4%) at 9.5 msg/s, ETA: 72142.9s
+2025-05-07 17:57:03,079 INFO: Sent 2700/690894 messages (0.4%) at 9.5 msg/s, ETA: 72144.7s
+2025-05-07 17:57:08,091 INFO: Sent 2748/690894 messages (0.4%) at 9.5 msg/s, ETA: 72134.6s
+2025-05-07 17:57:13,189 INFO: Sent 2796/690894 messages (0.4%) at 9.5 msg/s, ETA: 72145.9s
+2025-05-07 17:57:13,606 INFO: Sent 2800/690894 messages (0.4%) at 9.5 msg/s, ETA: 72144.8s
+2025-05-07 17:57:18,711 INFO: Sent 2849/690894 messages (0.4%) at 9.5 msg/s, ETA: 72131.9s
+2025-05-07 17:57:23,718 INFO: Sent 2897/690894 messages (0.4%) at 9.5 msg/s, ETA: 72120.9s
+2025-05-07 17:57:24,044 INFO: Sent 2900/690894 messages (0.4%) at 9.5 msg/s, ETA: 72123.3s
+2025-05-07 17:57:29,092 INFO: Sent 2948/690894 messages (0.4%) at 9.5 msg/s, ETA: 72121.9s
+2025-05-07 17:57:34,137 INFO: Sent 2996/690894 messages (0.4%) at 9.5 msg/s, ETA: 72120.0s
+2025-05-07 17:57:34,551 INFO: Sent 3000/690894 messages (0.4%) at 9.5 msg/s, ETA: 72118.4s
+2025-05-07 17:57:39,565 INFO: Sent 3048/690894 messages (0.4%) at 9.5 msg/s, ETA: 72109.1s
+2025-05-07 17:57:44,620 INFO: Sent 3096/690894 messages (0.4%) at 9.5 msg/s, ETA: 72109.1s
+2025-05-07 17:57:45,036 INFO: Sent 3100/690894 messages (0.4%) at 9.5 msg/s, ETA: 72108.0s
+2025-05-07 17:57:50,086 INFO: Sent 3148/690894 messages (0.5%) at 9.5 msg/s, ETA: 72106.7s
+2025-05-07 17:57:55,109 INFO: Sent 3196/690894 messages (0.5%) at 9.5 msg/s, ETA: 72099.7s
+2025-05-07 17:57:55,527 INFO: Sent 3200/690894 messages (0.5%) at 9.5 msg/s, ETA: 72099.2s
+2025-05-07 17:58:00,574 INFO: Sent 3248/690894 messages (0.5%) at 9.5 msg/s, ETA: 72097.2s
+2025-05-07 17:58:05,578 INFO: Sent 3296/690894 messages (0.5%) at 9.5 msg/s, ETA: 72086.1s
+2025-05-07 17:58:05,990 INFO: Sent 3300/690894 messages (0.5%) at 9.5 msg/s, ETA: 72084.2s
+2025-05-07 17:58:11,087 INFO: Sent 3349/690894 messages (0.5%) at 9.5 msg/s, ETA: 72070.9s
+2025-05-07 17:58:16,112 INFO: Sent 3397/690894 messages (0.5%) at 9.5 msg/s, ETA: 72064.5s
+2025-05-07 17:58:16,426 INFO: Sent 3400/690894 messages (0.5%) at 9.5 msg/s, ETA: 72064.1s
+2025-05-07 17:58:21,518 INFO: Sent 3449/690894 messages (0.5%) at 9.5 msg/s, ETA: 72050.2s
+2025-05-07 17:58:26,559 INFO: Sent 3497/690894 messages (0.5%) at 9.5 msg/s, ETA: 72047.0s
+2025-05-07 17:58:26,870 INFO: Sent 3500/690894 messages (0.5%) at 9.5 msg/s, ETA: 72046.1s
+2025-05-07 17:58:31,970 INFO: Sent 3549/690894 messages (0.5%) at 9.5 msg/s, ETA: 72034.1s
+2025-05-07 17:58:37,005 INFO: Sent 3597/690894 messages (0.5%) at 9.5 msg/s, ETA: 72029.9s
+2025-05-07 17:58:37,358 INFO: Sent 3600/690894 messages (0.5%) at 9.5 msg/s, ETA: 72037.0s
+2025-05-07 17:58:42,361 INFO: Sent 3647/690894 messages (0.5%) at 9.5 msg/s, ETA: 72046.5s
+2025-05-07 17:58:47,372 INFO: Sent 3695/690894 messages (0.5%) at 9.5 msg/s, ETA: 72037.5s
+2025-05-07 17:58:47,900 INFO: Sent 3700/690894 messages (0.5%) at 9.5 msg/s, ETA: 72037.8s

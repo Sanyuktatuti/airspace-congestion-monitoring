@@ -190,6 +190,7 @@ if __name__ == "__main__":
     # -------------------------
     
     # Bin flights into grid cells (for visualization/analytics)
+    print(">>> Starting grid cell binning...")
     binned = scored \
         .withColumn(
             "lat_bin",
@@ -205,7 +206,8 @@ if __name__ == "__main__":
             .when(col("baro_altitude") > 30000, lit("high"))
             .otherwise(lit("mid"))
         )
-    
+
+    print(">>> Computing grid aggregates...")
     # Compute grid cell aggregates
     gridAggregates = binned \
         .withWatermark("event_ts", "30 seconds") \
@@ -218,6 +220,11 @@ if __name__ == "__main__":
             avg("risk_score").alias("avg_risk"),
             count("icao24").alias("flight_count")
         )
+
+    # Add debug output for grid aggregates
+    gridAggregates.printSchema()
+    print(">>> Grid aggregates schema shown above")
+    print(">>> Starting streaming queries...")
     
     # Altitude band occupancy
     altitudeBands = binned \
