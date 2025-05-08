@@ -12,7 +12,7 @@ import datetime
 import pandas as pd
 import numpy as np
 import streamlit as st
-import pydeck as pdk
+from typing import Dict, List
 from kafka import KafkaConsumer
 from influxdb_client import InfluxDBClient
 from influxdb_client.client.query_api import QueryApi
@@ -26,11 +26,32 @@ import folium
 from streamlit_folium import folium_static
 from folium.plugins import HeatMap, MarkerCluster
 
+# Import anomaly detection functions
+from anomaly_detection import (
+    analyze_flight_anomalies, 
+    get_anomaly_summary, 
+    get_anomaly_timestamps,
+    classify_anomaly_severity
+)
+
+# Remove simulated data import
+try:
+    import sys
+    import os.path
+    # Add the current directory to the path to ensure imports work
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+except ImportError as ie:
+    print(f"Warning: Could not import module: {str(ie)}")
+
 # Try to load environment variables from .env file
 try:
     from dotenv import load_dotenv
     load_dotenv()
     print("Loaded environment variables from .env file")
+    # Debug output for InfluxDB credentials
+    print(f"InfluxDB URL: {os.environ.get('INFLUXDB_URL', 'not set')}")
+    print(f"InfluxDB token: {os.environ.get('INFLUXDB_TOKEN', 'not set')[:10]}... (truncated)")
+    print(f"InfluxDB org: {os.environ.get('INFLUXDB_ORG', 'not set')}")
 except ImportError:
     print("python-dotenv not installed. Using environment variables from the system.")
 
@@ -42,12 +63,8 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Set Mapbox token for map rendering
-mapbox_token = os.environ.get("MAPBOX_TOKEN", "pk.eyJ1IjoiZGVtby1tYXBib3giLCJhIjoiY2xvMGJuMDZ3MHI3ZjJpbnMwNHJ2ZnM1bCJ9.NQiBw0-YjBCzv_pI8kGsLw")
-pdk.settings.mapbox_key = mapbox_token
-
 # Print debug info
-print(f"Mapbox token: {mapbox_token}")
+print(f"Starting dashboard...")
 
 # Global variables
 UPDATE_INTERVAL = 3  # seconds
@@ -61,15 +78,28 @@ def get_influx_client():
     influx_token = os.environ.get('INFLUXDB_TOKEN', '')
     influx_org = os.environ.get('INFLUXDB_ORG', 'airspace')
     
+    print(f"Connecting to InfluxDB at {influx_url} with org {influx_org}")
+    print(f"Token length: {len(influx_token)} characters")
+    
     try:
+        # Make sure we have a valid token
+        if not influx_token or len(influx_token) < 10:
+            print("InfluxDB token is missing or too short, checking for token from environment")
+            # Try to get token from direct environment variable
+            influx_token = os.environ.get('INFLUXDB_TOKEN', '')
+            
         client = InfluxDBClient(
             url=influx_url,
             token=influx_token,
             org=influx_org
         )
+        # Test the connection
+        health = client.health()
+        print(f"InfluxDB connection successful. Status: {health.status}")
         return client
     except Exception as e:
         st.error(f"Failed to connect to InfluxDB: {e}")
+        print(f"InfluxDB connection error details: {str(e)}")
         return None
 
 @st.cache_resource
@@ -116,6 +146,67 @@ def query_flight_metrics(query_api, bucket="flight_metrics", time_range="5m"):
         return result
     except Exception as e:
         st.error(f"Error querying flight metrics: {e}")
+        print(f"InfluxDB query error: {str(e)}")
+        
+        # Try to get data directly from Kafka
+        print("Attempting to fetch data directly from Kafka flight-metrics topic...")
+        return get_flight_metrics_from_kafka()
+
+def get_flight_metrics_from_kafka():
+    """Get flight metrics directly from Kafka when InfluxDB is unavailable"""
+    try:
+        consumer = get_kafka_consumer("flight-metrics")
+        if consumer:
+            messages = fetch_recent_flights(consumer, max_messages=1000, timeout_sec=5)
+            if messages:
+                # Convert messages to DataFrame
+                df = pd.DataFrame(messages)
+                
+                # Convert string timestamp to datetime if it exists
+                if '_time' in df.columns:
+                    try:
+                        df['_time'] = pd.to_datetime(df['_time'])
+                        # Set _time as index for compatibility with anomaly detection
+                        df = df.set_index('_time')
+                    except Exception as e:
+                        print(f"Warning: Could not convert _time to datetime: {str(e)}")
+                
+                print(f"Successfully fetched {len(df)} records from Kafka flight-metrics topic")
+                return df
+            else:
+                print("No messages received from Kafka flight-metrics topic")
+        
+        # If we couldn't get data from Kafka metrics, try the original flight stream
+        print("Attempting to fetch data from flight-stream topic...")
+        consumer = get_kafka_consumer("flight-stream")
+        if consumer:
+            messages = fetch_recent_flights(consumer, max_messages=1000, timeout_sec=5)
+            if messages:
+                df = process_flight_data(messages)
+                
+                # Create a datetime index if not present
+                if not isinstance(df.index, pd.DatetimeIndex):
+                    # Create a timestamp column if not present
+                    if 'timestamp' in df.columns:
+                        try:
+                            df['timestamp'] = pd.to_datetime(df['timestamp'])
+                            df = df.set_index('timestamp')
+                        except Exception as e:
+                            print(f"Warning: Could not convert timestamp to datetime: {str(e)}")
+                    else:
+                        # Create artificial timestamps
+                        now = pd.Timestamp.now()
+                        timestamps = [now - pd.Timedelta(seconds=i) for i in range(len(df)-1, -1, -1)]
+                        df.index = pd.DatetimeIndex(timestamps)
+                
+                print(f"Successfully fetched {len(df)} records from Kafka flight-stream topic")
+                return df
+        
+        # If all else fails, return empty DataFrame
+        print("Could not fetch data from Kafka, returning empty DataFrame")
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"Error fetching data from Kafka: {str(e)}")
         return pd.DataFrame()
 
 def query_grid_metrics(query_api, bucket="flight_metrics", time_range="5m"):
@@ -136,6 +227,46 @@ def query_grid_metrics(query_api, bucket="flight_metrics", time_range="5m"):
         return result
     except Exception as e:
         st.error(f"Error querying grid metrics: {e}")
+        print(f"InfluxDB grid metrics query error: {str(e)}")
+        
+        # Try to get grid metrics directly from Kafka
+        print("Attempting to fetch grid data directly from Kafka flight-aggregates topic...")
+        return get_grid_metrics_from_kafka()
+
+def get_grid_metrics_from_kafka():
+    """Get grid metrics directly from Kafka when InfluxDB is unavailable"""
+    try:
+        consumer = get_kafka_consumer("flight-aggregates")
+        if consumer:
+            messages = fetch_recent_flights(consumer, max_messages=1000, timeout_sec=5)
+            if messages:
+                # Convert messages to DataFrame
+                df = pd.DataFrame(messages)
+                
+                # Convert string timestamp to datetime if it exists
+                if '_time' in df.columns:
+                    try:
+                        df['_time'] = pd.to_datetime(df['_time'])
+                    except Exception as e:
+                        print(f"Warning: Could not convert _time to datetime: {str(e)}")
+                
+                # Ensure lat_bin and lon_bin are present for grid visualization
+                if 'lat' in df.columns and 'lon' in df.columns and 'lat_bin' not in df.columns:
+                    try:
+                        # Create grid bins from coordinates
+                        df['lat_bin'] = (df['lat'] + 90).astype(int)
+                        df['lon_bin'] = (df['lon'] + 180).astype(int)
+                    except Exception as e:
+                        print(f"Warning: Could not create grid bins: {str(e)}")
+                
+                print(f"Successfully fetched {len(df)} grid records from Kafka flight-aggregates topic")
+                return df
+        
+        # If all else fails, return empty DataFrame
+        print("Could not fetch grid data from Kafka, returning empty DataFrame")
+        return pd.DataFrame()
+    except Exception as e:
+        print(f"Error fetching grid data from Kafka: {str(e)}")
         return pd.DataFrame()
 
 def fetch_recent_flights(consumer, max_messages=1000, timeout_sec=5):  # Increased limits
@@ -164,213 +295,38 @@ def fetch_recent_flights(consumer, max_messages=1000, timeout_sec=5):  # Increas
         print(f"Error fetching messages: {str(e)}")
         return []
 
-# def process_flight_data(messages):
-#     """Convert Kafka messages to a DataFrame"""
-#     if not messages:
-#         return pd.DataFrame()
-    
-#     # Convert to DataFrame
-#     df = pd.DataFrame(messages)
-    
-#     # Clean up data
-#     for col in ['longitude', 'latitude', 'baro_altitude', 'velocity', 'vertical_rate']:
-#         if col in df.columns:
-#             df[col] = pd.to_numeric(df[col], errors='coerce')
-    
-#     # Filter out invalid coordinates
-#     df = df.dropna(subset=['longitude', 'latitude'])
-    
-#     return df
 def process_flight_data(messages):
     """Convert Kafka messages to a DataFrame"""
     if not messages:
         return pd.DataFrame()
     
-    # ── flatten nested payloads (new format wraps under "value")
-    df = pd.DataFrame([ msg.get("value", msg) for msg in messages ])
+    # Convert to DataFrame
+    df = pd.DataFrame(messages)
     
-    # ── convert fetch_time (ms) into datetime, coercing bad values
-    if "fetch_time" in df.columns:
-        df["fetch_time"] = pd.to_datetime(df["fetch_time"], unit="ms", errors="coerce")
-    
-    # ── Clean numeric columns & replace nulls with zero
+    # Clean up data
     for col in ['longitude', 'latitude', 'baro_altitude', 'velocity', 'vertical_rate']:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+            df[col] = pd.to_numeric(df[col], errors='coerce')
     
-    # ── Drop rows with no valid coords
+    # Filter out invalid coordinates
     df = df.dropna(subset=['longitude', 'latitude'])
     
-    # ── Fill common string fields so UI shows empty strings instead of NaN
-    for col in ['icao24', 'callsign', 'origin_country', 'squawk', 'position_source']:
-        if col in df.columns:
-            df[col] = df[col].fillna("")
-
-# ── Handle airline names: show "No Data Available" if missing or blank
-    # ── Extract airline from nested aircraft metadata (fallback: No Data Available)
-    if 'aircraft' in df.columns:
-        df['airline'] = df['aircraft'].apply(
-            lambda x: x.get('registered_owner')
-                      if isinstance(x, dict) and x.get('registered_owner')
-                      else "No Data Available"
-        )
     return df
 
-def create_flight_map(df, risk_column=None):
-    """Create a PyDeck map visualization of flights"""
-    if df.empty:
-        return None
-    
-    try:
-        # Try PyDeck first
-        # Default column for coloring if risk score not available
-        if risk_column in df.columns:
-            color_by = risk_column
-        elif 'velocity' in df.columns:
-            color_by = 'velocity'
-        else:
-            df['default_color'] = 0.5
-            color_by = 'default_color'
-        
-        # Normalize values for coloring
-        min_val = df[color_by].min()
-        max_val = df[color_by].max()
-        range_val = max(1.0, max_val - min_val)
-        
-        def get_color(val):
-            if pd.isna(val):
-                return [100, 100, 100]
-            normalized = (val - min_val) / range_val
-            if color_by == 'risk_score':
-                r = int(255 * normalized)
-                g = int(255 * (1 - normalized))
-                return [r, g, 0]
-            elif color_by == 'velocity':
-                r = int(255 * normalized)
-                b = int(255 * (1 - normalized))
-                return [r, 0, b]
-            else:
-                return [0, 0, 255]
-        
-        df['color'] = df[color_by].apply(get_color)
-        
-        flight_layer = pdk.Layer(
-            "ScatterplotLayer",
-            data=df,
-            get_position=["longitude", "latitude"],
-            get_fill_color="color",
-            get_radius=3000,
-            pickable=True,
-            opacity=0.8,
-            stroked=True,
-            filled=True,
-            radius_scale=6,
-            radius_min_pixels=5,
-            radius_max_pixels=100,
-            line_width_min_pixels=1
-        )
-
-        view_state = pdk.ViewState(
-            latitude=df["latitude"].mean(),
-            longitude=df["longitude"].mean(),
-            zoom=4,
-            pitch=0
-        )
-
-        deck = pdk.Deck(
-            map_style="light",
-            initial_view_state=view_state,
-            layers=[flight_layer],
-            tooltip={
-                "html": """
-                <div style="font-family: Arial; padding: 10px; background-color: rgba(0, 0, 0, 0.7); color: white; border-radius: 5px;">
-                    <b>ICAO24:</b> {icao24}<br/>
-                    """ + 
-                    ("""<b>Flight:</b> {callsign}<br/>""" if 'callsign' in df.columns else "") +
-                    ("""<b>Country:</b> {origin_country}<br/>""" if 'origin_country' in df.columns else "") +
-                    ("""<b>Altitude:</b> {baro_altitude} m<br/>""" if 'baro_altitude' in df.columns else "") +
-                    ("""<b>Speed:</b> {velocity} m/s<br/>""" if 'velocity' in df.columns else "") +
-                    ("""<b>Climb Rate:</b> {vertical_rate} m/s<br/>""" if 'vertical_rate' in df.columns else "") +
-                    ("""<b>Risk Score:</b> {risk_score}""" if 'risk_score' in df.columns else "") +
-                """
-                </div>
-                """,
-                "style": {"color": "white"}
-            }
-        )
-        
-        try:
-            st.pydeck_chart(deck)
-            return True
-        except Exception as e:
-            st.warning("PyDeck map failed to render, falling back to basic map")
-            return False
-            
-    except Exception as e:
-        st.error(f"Error creating flight map: {e}")
-        return None
-    
 def display_basic_map(df):
     """Display a basic map using Streamlit's built-in map function"""
     if not df.empty and 'latitude' in df.columns and 'longitude' in df.columns:
         st.map(df[['latitude', 'longitude']], zoom=3)
-        +    st.dataframe(df)
+        
         # Display flight information in a table below the map
-        # with st.expander("Flight Details", expanded=False):
-        #     display_cols = [
-        #         "icao24", "callsign", "origin_country",
-        #         "longitude", "latitude", "baro_altitude", 
-        #         "velocity", "vertical_rate"
-        #     ]
-        #     available_cols = [c for c in display_cols if c in df.columns]
-        #     st.dataframe(df[available_cols])
-
-def create_grid_heatmap(df):
-    """Create a heatmap of flight density by grid cell"""
-    if df.empty:
-        print("Warning: Empty dataframe passed to create_grid_heatmap")
-        return None
-    
-    print(f"Creating heatmap with {len(df)} grid cells")
-    print("Columns available:", df.columns.tolist())
-    
-    # Convert lat/lon bins to coordinates
-    if 'lat_bin' in df.columns and 'lon_bin' in df.columns:
-        # Create center points from grid cells
-        df['latitude'] = (df['lat_bin'] + 0.5) - 90
-        df['longitude'] = (df['lon_bin'] + 0.5) - 180
-        print("Converted grid cells to coordinates")
-        print("Sample data:", df[['lat_bin', 'lon_bin', 'latitude', 'longitude', 'flight_count']].head())
-    else:
-        print("Error: Missing lat_bin or lon_bin columns")
-        return None
-
-    # Create a scatter plot layer instead of heatmap
-    scatter_layer = pdk.Layer(
-        "ScatterplotLayer",
-        df,
-        get_position=['longitude', 'latitude'],
-        get_radius='flight_count * 5000',  # Scale the size based on flight count
-        get_fill_color=[255, 140, 0, 140],  # Orange with some transparency
-        pickable=True
-    )
-    
-    # Create the deck
-    deck = pdk.Deck(
-        map_style='mapbox://styles/mapbox/dark-v10',
-        initial_view_state=pdk.ViewState(
-            latitude=20,
-            longitude=0,
-            zoom=1,
-            pitch=0,
-        ),
-        layers=[scatter_layer],
-        tooltip={
-            "html": "<b>Flights:</b> {flight_count}<br/><b>Risk:</b> {avg_risk:.2f}"
-        }
-    )
-    
-    return deck
+        with st.expander("Flight Details", expanded=False):
+            display_cols = [
+                "icao24", "callsign", "origin_country",
+                "longitude", "latitude", "baro_altitude", 
+                "velocity", "vertical_rate"
+            ]
+            available_cols = [c for c in display_cols if c in df.columns]
+            st.dataframe(df[available_cols])
 
 def display_metrics_charts(metrics_df):
     """Display charts for key flight metrics"""
@@ -434,8 +390,6 @@ def create_folium_flight_map(df, risk_column=None):
                 popup_text += f"Callsign: {row['callsign']}<br>"
             if 'origin_country' in row and not pd.isna(row['origin_country']):
                 popup_text += f"Country: {row['origin_country']}<br>"
-            if 'airline' in row:
-                popup_text += f"Airline: {row['airline']}<br>"
             if 'baro_altitude' in row and not pd.isna(row['baro_altitude']):
                 popup_text += f"Altitude: {row['baro_altitude']} m<br>"
             if 'velocity' in row and not pd.isna(row['velocity']):
@@ -794,99 +748,324 @@ def create_hotspot_map(hotspots_df):
     
     return m
 
-def create_anomaly_chart(anomalies_df):
-    """Create anomaly timeline chart"""
-    if anomalies_df.empty:
+def create_anomaly_timeline(flight_data, anomaly_results, parameter):
+    """
+    Create a timeline chart showing parameter values and detected anomalies.
+    
+    Args:
+        flight_data: DataFrame with flight parameters
+        anomaly_results: Results from analyze_flight_anomalies
+        parameter: Parameter to visualize (e.g., 'baro_altitude', 'velocity')
+        
+    Returns:
+        Plotly figure object
+    """
+    if parameter not in flight_data.columns or parameter not in anomaly_results:
         return None
     
-    # Convert string timestamps to datetime
-    anomalies_df['start_time'] = pd.to_datetime(anomalies_df['window_start'])
-    anomalies_df['end_time'] = pd.to_datetime(anomalies_df['window_end'])
+    # Get parameter data and anomalies
+    param_data = flight_data[parameter]
+    param_anomalies = anomaly_results[parameter]
     
-    # Sort by time
-    anomalies_df = anomalies_df.sort_values('start_time')
-    
+    # Create figure
     fig = go.Figure()
     
-    # Add scatter plot for anomalies
+    # Add parameter line
     fig.add_trace(go.Scatter(
-        x=anomalies_df['start_time'],
-        y=anomalies_df['max_anomaly_risk'],
-        mode='markers',
-        name='Max Risk',
-        marker=dict(
-            size=anomalies_df['anomaly_count'] * 2,
-            color=anomalies_df['max_anomaly_risk'],
-            colorscale='Reds',
-            showscale=True,
-            colorbar=dict(title='Risk Score')
-        ),
-        text=[f"Count: {c}<br>Avg Risk: {a:.2f}<br>Max Risk: {m:.2f}" 
-              for c, a, m in zip(anomalies_df['anomaly_count'], 
-                                 anomalies_df['avg_anomaly_risk'], 
-                                 anomalies_df['max_anomaly_risk'])],
-        hoverinfo='text+x'
+        x=param_data.index,
+        y=param_data,
+        mode='lines',
+        name=parameter.replace('_', ' ').title(),
+        line=dict(color='royalblue', width=2)
     ))
+    
+    # Add anomaly points with different colors for each type
+    colors = {
+        'statistical_outliers': 'red',
+        'sudden_changes': 'orange',
+        'trend_deviations': 'purple',
+        'vertical_inconsistencies': 'brown',
+        'extreme_acceleration': 'darkred',
+        'extreme_turn_rate': 'magenta'
+    }
+    
+    for anomaly_type, anomaly_series in param_anomalies.items():
+        if anomaly_type != 'any_anomaly' and anomaly_series.any():
+            # Get points where anomalies occurred
+            anomaly_points = param_data[anomaly_series]
+            
+            if not anomaly_points.empty:
+                fig.add_trace(go.Scatter(
+                    x=anomaly_points.index,
+                    y=anomaly_points,
+                    mode='markers',
+                    name=anomaly_type.replace('_', ' ').title(),
+                    marker=dict(
+                        color=colors.get(anomaly_type, 'gray'),
+                        size=10,
+                        symbol='circle',
+                        line=dict(width=1, color='black')
+                    )
+                ))
     
     # Update layout
     fig.update_layout(
-        title='Risk Anomalies Timeline',
+        title=f"{parameter.replace('_', ' ').title()} Anomalies",
         xaxis=dict(title='Time'),
-        yaxis=dict(title='Max Risk Score'),
+        yaxis=dict(title=parameter.replace('_', ' ').title()),
+        legend=dict(
+            orientation='h',
+            yanchor='bottom',
+            y=1.02,
+            xanchor='right',
+            x=1
+        ),
         margin=dict(l=20, r=20, t=40, b=20),
         hovermode='closest'
     )
     
     return fig
 
-def create_cluster_chart(clusters_df):
-    """Create cluster analysis chart"""
-    if clusters_df.empty:
+def create_anomaly_severity_chart(flight_data, severity):
+    """
+    Create a chart showing anomaly severity over time.
+    
+    Args:
+        flight_data: DataFrame with flight parameters
+        severity: Series with severity levels from classify_anomaly_severity
+        
+    Returns:
+        Plotly figure object
+    """
+    if severity.empty:
         return None
     
-    # Sort by cluster number
-    clusters_df = clusters_df.sort_values('prediction')
+    # Create a color map for severity levels
+    colors = {
+        0: 'green',   # No anomaly
+        1: 'yellow',  # Low severity
+        2: 'orange',  # Medium severity
+        3: 'red'      # High severity
+    }
     
-    # Create parallel coordinates plot
-    dimensions = [
-        dict(range=[0, clusters_df['flight_count'].max()],
-             label='Flight Count', values=clusters_df['flight_count']),
-        dict(range=[0, clusters_df['cluster_avg_risk'].max()],
-             label='Risk Score', values=clusters_df['cluster_avg_risk']),
-        dict(range=[0, clusters_df['cluster_avg_velocity'].max()],
-             label='Velocity (m/s)', values=clusters_df['cluster_avg_velocity']),
-        dict(range=[0, clusters_df['cluster_avg_altitude'].max()],
-             label='Altitude (m)', values=clusters_df['cluster_avg_altitude']),
-        dict(range=[clusters_df['cluster_avg_vertical_rate'].min(), 
-                    clusters_df['cluster_avg_vertical_rate'].max()],
-             label='Vertical Rate (m/s)', values=clusters_df['cluster_avg_vertical_rate']),
-        dict(range=[clusters_df['cluster_avg_acceleration'].min(), 
-                    clusters_df['cluster_avg_acceleration'].max()],
-             label='Acceleration (m/s²)', values=clusters_df['cluster_avg_acceleration']),
-        dict(range=[clusters_df['cluster_avg_turn_rate'].min(), 
-                    clusters_df['cluster_avg_turn_rate'].max()],
-             label='Turn Rate (°/s)', values=clusters_df['cluster_avg_turn_rate'])
+    # Create a continuous color scale
+    color_scale = [
+        [0, 'green'],
+        [0.33, 'yellow'],
+        [0.66, 'orange'],
+        [1, 'red']
     ]
     
-    fig = go.Figure(data=
-        go.Parcoords(
-            line=dict(
-                color=clusters_df['prediction'],
-                colorscale='Viridis',
-                showscale=True,
-                colorbar=dict(title='Cluster')
-            ),
-            dimensions=dimensions
-        )
-    )
+    # Create figure
+    fig = go.Figure()
+    
+    # Add severity as a heatmap-like visualization
+    fig.add_trace(go.Scatter(
+        x=severity.index,
+        y=[1] * len(severity),  # Constant y value for heatmap-like effect
+        mode='markers',
+        marker=dict(
+            color=severity,
+            colorscale=color_scale,
+            cmin=0,
+            cmax=3,
+            size=15,
+            showscale=True,
+            colorbar=dict(
+                title='Severity',
+                tickvals=[0, 1, 2, 3],
+                ticktext=['None', 'Low', 'Medium', 'High']
+            )
+        ),
+        hovertemplate='Time: %{x}<br>Severity: %{marker.color}<extra></extra>'
+    ))
     
     # Update layout
     fig.update_layout(
-        title='Flight Behavior Clusters',
-        margin=dict(l=80, r=80, t=80, b=40),
+        title='Anomaly Severity Timeline',
+        xaxis=dict(title='Time'),
+        yaxis=dict(
+            showticklabels=False,
+            showgrid=False,
+            zeroline=False
+        ),
+        height=200,
+        margin=dict(l=20, r=20, t=40, b=20)
     )
     
     return fig
+
+def create_anomaly_map(
+    flight_data: pd.DataFrame,
+    anomaly_results: Dict[str, Dict[str, pd.Series]]
+) -> folium.Map:
+    """
+    Create a map highlighting flights with anomalies.
+    
+    Args:
+        flight_data: DataFrame with flight parameters
+        anomaly_results: Results from analyze_flight_anomalies
+        
+    Returns:
+        folium.Map object
+    """
+    if flight_data.empty or 'overall' not in anomaly_results:
+        return None
+    
+    # Get overall anomaly indicator
+    any_anomaly = anomaly_results['overall']['any_anomaly']
+    
+    # Get severity if available
+    severity = classify_anomaly_severity(anomaly_results)
+    
+    # Add severity to the flight data
+    flight_data_with_anomalies = flight_data.copy()
+    flight_data_with_anomalies['has_anomaly'] = any_anomaly
+    flight_data_with_anomalies['anomaly_severity'] = severity
+    
+    # Create folium map
+    center_lat = flight_data['latitude'].mean()
+    center_lon = flight_data['longitude'].mean()
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=5)
+    
+    # Add markers for flights with anomalies
+    for _, row in flight_data_with_anomalies[flight_data_with_anomalies['has_anomaly']].iterrows():
+        # Determine color based on severity
+        if 'anomaly_severity' in row and not pd.isna(row['anomaly_severity']):
+            severity_level = int(row['anomaly_severity'])
+            color = 'green' if severity_level == 1 else ('orange' if severity_level == 2 else 'red')
+        else:
+            color = 'red'  # Default to red if severity not available
+        
+        # Create popup text
+        popup_text = f"<b>ICAO24:</b> {row.get('icao24', 'Unknown')}<br>"
+        if 'callsign' in row and not pd.isna(row['callsign']):
+            popup_text += f"<b>Callsign:</b> {row['callsign']}<br>"
+        if 'baro_altitude' in row and not pd.isna(row['baro_altitude']):
+            popup_text += f"<b>Altitude:</b> {row['baro_altitude']} m<br>"
+        if 'velocity' in row and not pd.isna(row['velocity']):
+            popup_text += f"<b>Speed:</b> {row['velocity']} m/s<br>"
+        if 'anomaly_severity' in row and not pd.isna(row['anomaly_severity']):
+            severity_text = ['None', 'Low', 'Medium', 'High'][int(row['anomaly_severity'])]
+            popup_text += f"<b>Anomaly Severity:</b> {severity_text}<br>"
+        
+        # Add marker
+        folium.Marker(
+            location=[row['latitude'], row['longitude']],
+            popup=folium.Popup(popup_text, max_width=300),
+            icon=folium.Icon(icon="warning", prefix="fa", color=color),
+        ).add_to(m)
+    
+    # Add normal flights as small blue markers
+    normal_flights = folium.FeatureGroup(name="Normal Flights")
+    for _, row in flight_data_with_anomalies[~flight_data_with_anomalies['has_anomaly']].iterrows():
+        folium.CircleMarker(
+            location=[row['latitude'], row['longitude']],
+            radius=3,
+            color='blue',
+            fill=True,
+            fill_opacity=0.6,
+            popup=f"ICAO24: {row.get('icao24', 'Unknown')}"
+        ).add_to(normal_flights)
+    
+    normal_flights.add_to(m)
+    
+    # Add layer control
+    folium.LayerControl().add_to(m)
+    
+    return m
+
+def create_anomaly_summary_cards(anomaly_summary):
+    """
+    Create summary cards for anomaly detection results.
+    
+    Args:
+        anomaly_summary: Summary dictionary from get_anomaly_summary
+        
+    Returns:
+        None (directly renders to Streamlit)
+    """
+    # Create columns for metrics
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric(
+            "Total Anomalies", 
+            anomaly_summary['total_anomalies'],
+            delta=None
+        )
+    
+    with col2:
+        st.metric(
+            "Anomaly Percentage", 
+            f"{anomaly_summary['anomaly_percentage']:.1f}%",
+            delta=None
+        )
+    
+    with col3:
+        st.metric(
+            "Max Simultaneous Anomalies", 
+            anomaly_summary['max_anomaly_count'],
+            delta=None
+        )
+    
+    # Add parameter breakdown
+    if anomaly_summary['parameter_breakdown']:
+        st.subheader("Anomaly Breakdown by Parameter")
+        
+        # Create columns for each parameter
+        param_cols = st.columns(len(anomaly_summary['parameter_breakdown']))
+        
+        for i, (param, details) in enumerate(anomaly_summary['parameter_breakdown'].items()):
+            with param_cols[i]:
+                st.markdown(f"**{param.title()}**")
+                st.caption(f"Total: {details['total']} ({details['percentage']:.1f}%)")
+                
+                # Show breakdown by type
+                for anomaly_type, type_details in details['types'].items():
+                    if type_details['count'] > 0:
+                        st.caption(f"- {anomaly_type.replace('_', ' ').title()}: {type_details['count']}")
+
+def display_anomaly_details_table(flight_data, anomaly_events):
+    """
+    Display a table with detailed information about anomaly events.
+    
+    Args:
+        flight_data: DataFrame with flight parameters
+        anomaly_events: List of anomaly events from get_anomaly_timestamps
+        
+    Returns:
+        None (directly renders to Streamlit)
+    """
+    if not anomaly_events:
+        st.info("No anomalies detected")
+        return
+    
+    # Create a DataFrame for the anomaly events
+    events_data = []
+    
+    for event in anomaly_events:
+        timestamp = event['timestamp']
+        
+        # Get flight data at this timestamp
+        flight_row = flight_data.loc[timestamp] if timestamp in flight_data.index else {}
+        
+        # Create a row for the table
+        event_row = {
+            'Timestamp': timestamp,
+            'ICAO24': flight_row.get('icao24', 'Unknown'),
+            'Callsign': flight_row.get('callsign', 'Unknown'),
+            'Altitude (m)': flight_row.get('baro_altitude', None),
+            'Speed (m/s)': flight_row.get('velocity', None),
+            'Anomaly Count': event['anomaly_count'],
+            'Parameters': ', '.join(event['parameters'].keys())
+        }
+        
+        events_data.append(event_row)
+    
+    # Create DataFrame and display
+    events_df = pd.DataFrame(events_data)
+    st.dataframe(events_df, use_container_width=True)
 
 def run_historical_analytics():
     """Run historical analytics process"""
@@ -922,6 +1101,91 @@ def run_historical_analytics():
         st.error(f"Failed to run historical analytics: {e}")
         return False
 
+# Add new diagnostic function
+def check_flight_metrics_data(query_api, bucket="flight_metrics", time_range="24h"):
+    """Diagnostic function to check if flight metrics data exists and is accessible"""
+    results = {
+        "connection_status": False,
+        "buckets_available": [],
+        "flight_metrics_exists": False,
+        "sample_data": None,
+        "unique_flights": 0,
+        "time_range": time_range,
+        "error": None
+    }
+    
+    try:
+        # Test connection by listing buckets
+        client = query_api._influxdb_client
+        buckets_api = client.buckets_api()
+        buckets = buckets_api.find_buckets().buckets
+        results["connection_status"] = True
+        results["buckets_available"] = [bucket.name for bucket in buckets]
+        
+        # Check if flight_metrics bucket exists
+        if bucket in results["buckets_available"]:
+            results["flight_metrics_exists"] = True
+            
+            # Try to get sample data
+            query = f'''
+            from(bucket: "{bucket}")
+              |> range(start: -{time_range})
+              |> filter(fn: (r) => r["_measurement"] == "flight_metrics")
+              |> pivot(rowKey:["_time"], columnKey: ["_field"], valueColumn: "_value")
+              |> limit(n: 10)
+            '''
+            
+            sample_data = query_api.query_data_frame(query)
+            
+            if isinstance(sample_data, list) and sample_data:
+                sample_data = pd.concat(sample_data)
+            
+            if not sample_data.empty:
+                results["sample_data"] = sample_data
+                
+                # Count unique flights
+                count_query = f'''
+                from(bucket: "{bucket}")
+                  |> range(start: -{time_range})
+                  |> filter(fn: (r) => r["_measurement"] == "flight_metrics")
+                  |> group(columns: ["icao24"])
+                  |> count()
+                  |> group()
+                  |> count()
+                '''
+                
+                try:
+                    count_result = query_api.query_data_frame(count_query)
+                    if isinstance(count_result, list) and count_result:
+                        count_result = pd.concat(count_result)
+                    
+                    if not count_result.empty and "_value" in count_result.columns:
+                        results["unique_flights"] = count_result["_value"].iloc[0]
+                except:
+                    # If count query fails, try another approach
+                    try:
+                        distinct_query = f'''
+                        from(bucket: "{bucket}")
+                          |> range(start: -{time_range})
+                          |> filter(fn: (r) => r["_measurement"] == "flight_metrics" and r["_field"] == "icao24")
+                          |> group(columns: ["icao24"])
+                          |> distinct(column: "icao24")
+                          |> count()
+                        '''
+                        distinct_result = query_api.query_data_frame(distinct_query)
+                        if isinstance(distinct_result, list) and distinct_result:
+                            distinct_result = pd.concat(distinct_result)
+                        
+                        if not distinct_result.empty:
+                            results["unique_flights"] = len(distinct_result)
+                    except:
+                        pass
+        
+        return results
+    except Exception as e:
+        results["error"] = str(e)
+        return results
+
 def main():
     """Main dashboard application"""
     # Sidebar for controls
@@ -954,12 +1218,6 @@ def main():
         ["Kafka Stream", "InfluxDB Historical"]
     )
     
-    # Map provider selection
-    map_provider = st.sidebar.radio(
-        "Map Provider",
-        ["Folium Map", "PyDeck (Original)"]
-    )
-    
     # Time range for historical data
     if data_source == "InfluxDB Historical":
         time_range = st.sidebar.select_slider(
@@ -972,6 +1230,25 @@ def main():
         min_altitude = st.slider("Min Altitude (m)", 0, 15000, 0)
         max_risk = st.slider("Max Risk Score", 0.0, 2.0, 2.0, 0.1)
     
+    # Define anomaly detection parameters (moved to global scope)
+    # Default values that will be used unless overridden in the UI
+    detection_params = {
+        'altitude': {
+            'z_threshold': 3.0,
+            'change_threshold': 2.5,
+            'trend_threshold': 2.0
+        },
+        'velocity': {
+            'z_threshold': 3.0,
+            'change_threshold': 2.0,
+            'trend_threshold': 2.0
+        },
+        'heading': {
+            'z_threshold': 3.0,
+            'change_threshold': 2.5
+        }
+    }
+    
     # Main content area
     st.title("Airspace Congestion Monitoring")
     
@@ -982,63 +1259,57 @@ def main():
             # Get Kafka consumer and fetch data
             consumer = get_kafka_consumer("flight-stream")
             if consumer:
-                # ── Fetch from Kafka
                 with st.spinner("Fetching flight data..."):
                     messages = fetch_recent_flights(consumer)
-
-                # ── DEBUG: how many messages came in?
-                st.write(f"🔍 Fetched {len(messages) if messages is not None else 'None'} messages from Kafka")
-                if messages is None:
-                    st.error("Error fetching messages from Kafka")
-                    return
-
-                # ── Always process into a DataFrame (never None)
-                df = process_flight_data(messages)
-                # (process_flight_data always returns a DataFrame, so no need for `or`)
-
-                # # ── DEBUG: peek at the raw payloads
-                # st.write("📋 Raw messages preview:", messages[:5])
-                # if df.empty:
-                #     st.write("❗ DataFrame is empty after processing—check your schema and filters")
-
-                # ── Render when we have data
-                if not df.empty:
-                    st.success(f"Displaying {len(df)} flights")
-
-                    # Apply altitude & risk filters
-                    if 'baro_altitude' in df.columns:
-                        df = df[df['baro_altitude'] >= min_altitude]
-                    if 'risk_score' in df.columns:
-                        df = df[df['risk_score'] <= max_risk]
-
-                    # Map rendering
-                    if map_provider == "Folium Map":
+                    
+                if messages:
+                    df = process_flight_data(messages)
+                    
+                    if not df.empty:
+                        st.success(f"Displaying {len(df)} flights")
+                        
+                        # Apply filters
+                        if 'baro_altitude' in df.columns:
+                            df = df[df['baro_altitude'] >= min_altitude]
+                        
+                        if 'risk_score' in df.columns:
+                            df = df[df['risk_score'] <= max_risk]
+                        
+                        # Use Folium map
                         m = create_folium_flight_map(df, risk_column='risk_score')
                         if m:
                             folium_static(m)
                         else:
                             display_basic_map(df)
-                    else:
-                        if not create_flight_map(df, risk_column='risk_score'):
-                            display_basic_map(df)
-
-                    # Stats
-                    st.subheader("Flight Statistics")
-                    c1, c2, c3 = st.columns(3)
-                    with c1: st.metric("Total Flights", len(df))
-                    with c2:
-                        if 'risk_score' in df.columns:
-                            st.metric("Avg Risk Score", f"{df['risk_score'].mean():.2f}")
-                    with c3:
+                        
+                        # Display stats
+                        st.subheader("Flight Statistics")
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            st.metric("Total Flights", len(df))
+                        
+                        with col2:
+                            if 'risk_score' in df.columns:
+                                st.metric("Avg Risk Score", f"{df['risk_score'].mean():.2f}")
+                            
+                        with col3:
                             if 'velocity' in df.columns:
                                 st.metric("Avg Speed (m/s)", f"{df['velocity'].mean():.1f}")
-
-                    # Raw data expander
-                    with st.expander("Raw Flight Data", expanded=False):
-                        st.dataframe(df)
-
+                        
+                        # Data table with raw data
+                        with st.expander("Raw Flight Data", expanded=False):
+                            display_cols = [
+                                "icao24", "callsign", "origin_country",
+                                "longitude", "latitude", "baro_altitude", 
+                                "velocity", "vertical_rate"
+                            ]
+                            available_cols = [c for c in display_cols if c in df.columns]
+                            st.dataframe(df[available_cols])
+                    else:
+                        st.warning("No valid flight data available")
                 else:
-                    st.warning("No valid flight data available")
+                    st.warning("No messages received from Kafka")
             else:
                 st.error("Could not connect to Kafka")
         
@@ -1060,17 +1331,12 @@ def main():
                     if 'avg_risk' in metrics_df.columns:
                         metrics_df = metrics_df[metrics_df['avg_risk'] <= max_risk]
                     
-                    # Select map provider
-                    if map_provider == "Folium Map":
-                        m = create_folium_flight_map(metrics_df, risk_column='avg_risk')
-                        if m:
-                            folium_static(m)
-                        else:
-                            display_basic_map(metrics_df)
+                    # Use Folium map
+                    m = create_folium_flight_map(metrics_df, risk_column='avg_risk')
+                    if m:
+                        folium_static(m)
                     else:
-                        # Try PyDeck first, fall back to basic map if it fails
-                        if not create_flight_map(metrics_df, risk_column='avg_risk'):
-                            display_basic_map(metrics_df)
+                        display_basic_map(metrics_df)
                     
                     # Display metrics
                     display_metrics_charts(metrics_df)
@@ -1079,249 +1345,53 @@ def main():
             else:
                 st.error("Could not connect to InfluxDB")
     
-    # elif view_mode == "Grid Heatmap":
-    #     st.header("Flight Density Heatmap")
-        
-    #     if data_source == "Kafka Stream":
-    #         # Create a fresh consumer so we always start from earliest on each rerun
-    #         # consumer = KafkaConsumer(
-    #         #     "flight-aggregates",
-    #         #     bootstrap_servers=os.environ.get('KAFKA_BOOTSTRAP','localhost:9092'),
-    #         #     auto_offset_reset='earliest',
-    #         #     enable_auto_commit=False,
-    #         #     group_id=None,
-    #         #     value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-    #         #     consumer_timeout_ms=3000
-    #         # )
-    #         # 1) Create a “bare” consumer with no topic subscription:
-    #         consumer = KafkaConsumer(
-    #             bootstrap_servers=os.environ.get('KAFKA_BOOTSTRAP','localhost:9092'),
-    #             auto_offset_reset='earliest',
-    #             enable_auto_commit=False,
-    #             group_id=None,
-    #             value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-    #             consumer_timeout_ms=3000
-    #         )
-    #         # 2) Manually assign all partitions of the flight-aggregates topic:
-    #         from kafka import TopicPartition
-
-    #         parts = consumer.partitions_for_topic("flight-aggregates")
-    #         if parts:
-    #             tps = [TopicPartition("flight-aggregates", p) for p in parts]
-    #             consumer.assign(tps)
-    #             consumer.seek_to_beginning(*tps)
-    #         else:
-    #             st.warning("Topic 'flight-aggregates' has no partitions or doesn't exist")
-    #         from kafka import TopicPartition
-
-    #         # Manually assign all partitions of 'flight-aggregates'
-    #         parts = consumer.partitions_for_topic("flight-aggregates")
-    #         if parts:
-    #             tps = [TopicPartition("flight-aggregates", p) for p in parts]
-    #             consumer.assign(tps)
-    #             consumer.seek_to_beginning(*tps)
-    #         else:
-    #             st.warning("Topic 'flight-aggregates' has no partitions or doesn't exist")
-    #         # consumer.subscribe(["flight-aggregates"])
-    #         # consumer.poll(timeout_ms=0)
-    #         # consumer.seek_to_beginning()
-    #         # from kafka import TopicPartition
-
-    #         # # ── Manually assign all partitions for the topic, then rewind
-    #         # partitions = consumer.partitions_for_topic("flight-aggregates")
-    #         # if partitions:
-    #         #     tps = [TopicPartition("flight-aggregates", p) for p in partitions]
-    #         #     consumer.assign(tps)
-    #         #     consumer.seek_to_beginning(*tps)
-    #         # else:
-    #         #     st.warning("Topic 'flight-aggregates' has no partitions or doesn't exist")
-    #         if consumer:
-    #             with st.spinner("Fetching spatial aggregates..."):
-    #                 messages = fetch_recent_flights(consumer, max_messages=1000)
-
-    #             # ── DEBUG: show message count & sample
-    #             st.write(f"🔍 Fetched {len(messages) if messages is not None else 'None'} aggregate messages")
-    #             st.write("📋 Raw aggregates preview:", messages[:5])
-
-    #             df = pd.DataFrame()
-    #             if messages:
-    #                 # Flatten the envelope
-    #                 df = pd.DataFrame([msg.get("value", msg) for msg in messages])
-
-    #                 # Coerce numeric columns & fill missing with 0
-    #                 for col in ['lat_bin', 'lon_bin', 'avg_risk', 'flight_count']:
-    #                     if col in df.columns:
-    #                         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-
-    #                 # Parse window timestamps if present
-    #                 if 'window_start' in df.columns:
-    #                     df['window_start'] = pd.to_datetime(df['window_start'], errors='coerce')
-    #                 if 'window_end' in df.columns:
-    #                     df['window_end'] = pd.to_datetime(df['window_end'], errors='coerce')
-
-    #                 if not df.empty:
-    #                     st.success(f"Displaying {len(df)} grid cells (Kafka)")
-    #                     m = create_folium_grid_heatmap(df)
-    #                     if m:
-    #                         folium_static(m)
-
-    #                         # ── Grid Statistics
-    #                         st.subheader("Grid Statistics")
-    #                         c1, c2 = st.columns(2)
-    #                         with c1:
-    #                             st.metric("Active Grid Cells", len(df))
-    #                         with c2:
-    #                             if 'avg_risk' in df.columns:
-    #                                 st.metric("Avg Cell Risk", f"{df['avg_risk'].mean():.2f}")
-        
-    #                         # ── Raw Grid Data
-    #                         with st.expander("Raw Grid Data", expanded=False):
-    #                             display_cols = ["lat_bin", "lon_bin", "flight_count", "avg_risk"]
-    #                             available = [c for c in display_cols if c in df.columns]
-    #                             st.dataframe(df[available])
-    #                     else:
-    #                         st.error("Failed to render Kafka grid heatmap")
-
-    #                 else:
-    #                     st.warning("No aggregates in Kafka – falling back to InfluxDB")
-    #                     # ── FALLBACK to InfluxDB if Kafka is empty
-    #                     influx_client = get_influx_client()
-    #                     if influx_client:
-    #                         query_api = influx_client.query_api()
-    #                         grid_df = query_grid_metrics(query_api, time_range=time_range)
-    #                         if not grid_df.empty:
-    #                             st.success(f"Displaying {len(grid_df)} grid cells (InfluxDB)")
-    #             m2 = create_folium_grid_heatmap(grid_df)
-    #             if m2:
-    #                 folium_static(m2)
-
-    #                 # ── Grid Statistics (InfluxDB)
-    #                 st.subheader("Grid Statistics (InfluxDB)")
-    #                 c1, c2 = st.columns(2)
-    #                 with c1:
-    #                     st.metric("Active Grid Cells", len(grid_df))
-    #                 with c2:
-    #                     if 'avg_risk' in grid_df.columns:
-    #                         st.metric("Avg Cell Risk", f"{grid_df['avg_risk'].mean():.2f}")
-
-    #                 # ── Raw Grid Data (InfluxDB)
-    #                 with st.expander("Raw Grid Data (InfluxDB)", expanded=False):
-    #                     display_cols = ["lat_bin", "lon_bin", "flight_count", "avg_risk"]
-    #                     available = [c for c in display_cols if c in grid_df.columns]
-    #                     st.dataframe(grid_df[available])
-    #             else:
-    #                 st.error("Failed to render InfluxDB grid heatmap")
-    #                             # st.success(f"Displaying {len(grid_df)} grid cells (InfluxDB)")
-    #                             # m2 = create_folium_grid_heatmap(grid_df)
-    #                             # if m2:
-    #                             #     folium_static(m2)
-    #                             # else:
-    #                             #     st.error("Failed to render InfluxDB grid heatmap")
-    #             else:
-    #                 st.error("No historical grid metrics available in InfluxDB")
-    #                     else:
-    #                         st.error("Could not connect to InfluxDB for fallback")
-    #             else:
-    #                 st.warning("No aggregates received from Kafka")
-    #         else:
-    #              st.error("Could not connect to Kafka")
     elif view_mode == "Grid Heatmap":
         st.header("Flight Density Heatmap")
         
         if data_source == "Kafka Stream":
-            # ── Create & rewind consumer (omitted for brevity) …
-            consumer = KafkaConsumer(
-                bootstrap_servers=os.environ.get('KAFKA_BOOTSTRAP','localhost:9092'),
-                auto_offset_reset='earliest',
-                enable_auto_commit=False,
-                group_id=None,
-                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-                consumer_timeout_ms=3000
-            )
-            from kafka import TopicPartition
-            parts = consumer.partitions_for_topic("flight-aggregates")
-            if parts:
-                tps = [TopicPartition("flight-aggregates", p) for p in parts]
-                consumer.assign(tps)
-                consumer.seek_to_beginning(*tps)
-            else:
-                st.warning("Topic 'flight-aggregates' has no partitions")
-
-            with st.spinner("Fetching spatial aggregates..."):
-                messages = fetch_recent_flights(consumer, max_messages=1000)
-
-            st.write(f"🔍 Fetched {len(messages)} aggregate messages")
-            # st.write("📋 Raw aggregates preview:", messages[:5])
-
-            # ── Process into DataFrame
-            df = pd.DataFrame()
-            if messages:
-                df = pd.DataFrame([msg.get("value", msg) for msg in messages])
-                for col in ['lat_bin','lon_bin','avg_risk','flight_count']:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-                if 'window_start' in df.columns:
-                    df['window_start'] = pd.to_datetime(df['window_start'], errors='coerce')
-                if 'window_end' in df.columns:
-                    df['window_end'] = pd.to_datetime(df['window_end'], errors='coerce')
-
-                if not df.empty:
-                    # ── Kafka path
-                    st.success(f"Displaying {len(df)} grid cells (Kafka)")
-                    m = create_folium_grid_heatmap(df)
-                    if m:
-                        folium_static(m)
-
-                        # ── Grid Statistics (Kafka)
-                        st.subheader("Grid Statistics")
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            st.metric("Active Grid Cells", len(df))
-                        with c2:
-                            st.metric("Avg Cell Risk", f"{df['avg_risk'].mean():.2f}")
-
-                        # ── Raw Grid Data (Kafka)
-                        with st.expander("Raw Grid Data", expanded=False):
-                            cols = ["lat_bin","lon_bin","flight_count","avg_risk"]
-                            avail = [c for c in cols if c in df.columns]
-                            st.dataframe(df[avail])
-                    else:
-                        st.error("Failed to render Kafka grid heatmap")
-
-                else:
-                    # ── Fallback to InfluxDB
-                    st.warning("No aggregates in Kafka – falling back to InfluxDB")
-                    influx_client = get_influx_client()
-                    if influx_client:
-                        query_api = influx_client.query_api()
-                        grid_df = query_grid_metrics(query_api, time_range=time_range)
-                        if not grid_df.empty:
-                            st.success(f"Displaying {len(grid_df)} grid cells (InfluxDB)")
-                            m2 = create_folium_grid_heatmap(grid_df)
-                            if m2:
-                                folium_static(m2)
-
-                                # ── Grid Statistics (InfluxDB)
-                                st.subheader("Grid Statistics (InfluxDB)")
-                                c1, c2 = st.columns(2)
-                                with c1:
-                                    st.metric("Active Grid Cells", len(grid_df))
-                                with c2:
-                                    st.metric("Avg Cell Risk", f"{grid_df['avg_risk'].mean():.2f}")
-
-                                # ── Raw Grid Data (InfluxDB)
-                                with st.expander("Raw Grid Data (InfluxDB)", expanded=False):
-                                    cols2 = ["lat_bin","lon_bin","flight_count","avg_risk"]
-                                    avail2 = [c for c in cols2 if c in grid_df.columns]
-                                    st.dataframe(grid_df[avail2])
-                            else:
-                                st.error("Failed to render InfluxDB grid heatmap")
+            # For Kafka, we'd need to use the aggregates topic
+            consumer = get_kafka_consumer("flight-aggregates")
+            if consumer:
+                with st.spinner("Fetching spatial aggregates..."):
+                    messages = fetch_recent_flights(consumer, max_messages=1000)
+                
+                if messages:
+                    df = pd.DataFrame(messages)
+                    
+                    if not df.empty:
+                        st.success(f"Displaying {len(df)} grid cells")
+                        
+                        # Create Folium heatmap
+                        m = create_folium_grid_heatmap(df)
+                        if m:
+                            folium_static(m)
                         else:
-                            st.error("No historical grid metrics available in InfluxDB")
+                            st.error("Failed to create heatmap")
+                            # Fallback to a simple heatmap using Matplotlib
+                            create_matplotlib_heatmap(df)
+                        
+                        # Display stats
+                        st.subheader("Grid Statistics")
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.metric("Active Grid Cells", len(df))
+                        
+                        with col2:
+                            if 'avg_risk' in df.columns:
+                                st.metric("Avg Cell Risk", f"{df['avg_risk'].mean():.2f}")
+                        
+                        # Data table
+                        with st.expander("Raw Grid Data", expanded=False):
+                            display_cols = ["lat_bin", "lon_bin", "flight_count", "avg_risk"]
+                            available_cols = [c for c in display_cols if c in df.columns]
+                            st.dataframe(df[available_cols])
                     else:
-                        st.error("Could not connect to InfluxDB for fallback")
+                        st.warning("No valid grid data available")
+                else:
+                    st.warning("No aggregates received from Kafka")
             else:
-                st.warning("No aggregates received from Kafka")
+                st.error("Could not connect to Kafka")
         
         else:  # InfluxDB Historical
             influx_client = get_influx_client()
@@ -1334,23 +1404,14 @@ def main():
                 if not grid_df.empty:
                     st.success(f"Displaying {len(grid_df)} grid cells")
                     
-                    # Create heatmap
-                    grid_map = create_grid_heatmap(grid_df)
-                    if grid_map:
-                        try:
-                            st.pydeck_chart(grid_map)
-                        except Exception as e:
-                            st.error(f"Error displaying heatmap: {e}")
-                            st.warning("Falling back to basic heatmap display...")
-                        
-                        # Try Folium as a fallback
-                        m = create_folium_grid_heatmap(grid_df)
-                        if m:
-                            folium_static(m)
-                        else:
-                            # Fallback to a simple heatmap using Matplotlib
-                            create_matplotlib_heatmap(grid_df)
-                        
+                    # Create Folium heatmap
+                    m = create_folium_grid_heatmap(grid_df)
+                    if m:
+                        folium_static(m)
+                    else:
+                        # Fallback to a simple heatmap using Matplotlib
+                        create_matplotlib_heatmap(grid_df)
+                    
                     # Display aggregated data over time
                     st.subheader("Grid Cell Occupancy Over Time")
                     
@@ -1370,8 +1431,12 @@ def main():
     elif view_mode == "Flight Metrics":
         st.header("Flight Metrics Analysis")
         
-        # Add tabs for real-time metrics and historical analytics
-        metrics_tab, historical_tab = st.tabs(["Real-time Metrics", "Historical Analytics"])
+        # Add tabs for real-time metrics, historical analytics, and anomaly detection
+        metrics_tab, historical_tab, anomalies_tab = st.tabs([
+            "Real-time Metrics", 
+            "Historical Analytics", 
+            "Anomaly Detection"
+        ])
         
         with metrics_tab:
             influx_client = get_influx_client()
@@ -1386,43 +1451,115 @@ def main():
                 if not metrics_df.empty:
                     st.success(f"Analyzing metrics for {metrics_df['icao24'].nunique()} unique flights")
                     
-                    # Select a specific flight for detailed analysis
+                    # Select a specific flight for anomaly detection in the metrics tab
                     flight_ids = sorted(metrics_df['icao24'].unique())
-                    selected_flight = st.selectbox("Select Flight for Analysis", flight_ids)
+                    selected_flight = st.selectbox(
+                        "Select Flight for Analysis", 
+                        flight_ids,
+                        key="metrics_tab_flight_selector"  # Add a unique key
+                    )
                     
                     # Filter for the selected flight
                     flight_data = metrics_df[metrics_df['icao24'] == selected_flight]
                     
-                    # Display detailed metrics
                     if not flight_data.empty:
-                        st.subheader(f"Detailed Metrics for Flight {selected_flight}")
+                        # Run anomaly detection with the globally defined parameters
+                        anomaly_results = analyze_flight_anomalies(flight_data, parameters=detection_params)
                         
-                        # Display key metrics in expandable sections
-                        with st.expander("Risk Profile", expanded=True):
-                            if 'avg_risk' in flight_data.columns:
-                                st.line_chart(flight_data.set_index("_time")["avg_risk"])
-                        
-                        with st.expander("Movement Metrics", expanded=True):
-                            movement_cols = [c for c in ['acceleration', 'turn_rate', 'velocity'] 
-                                              if c in flight_data.columns]
+                        if anomaly_results:
+                            # Get summary statistics
+                            anomaly_summary = get_anomaly_summary(anomaly_results)
                             
-                            if movement_cols:
-                                st.line_chart(flight_data.set_index("_time")[movement_cols])
-                        
-                        with st.expander("Altitude Profile", expanded=True):
-                            altitude_cols = [c for c in ['baro_altitude', 'vertical_rate', 'alt_stability_idx'] 
-                                              if c in flight_data.columns]
+                            # Display summary cards
+                            create_anomaly_summary_cards(anomaly_summary)
                             
-                            if altitude_cols:
-                                st.line_chart(flight_data.set_index("_time")[altitude_cols])
-                        
-                        # Raw data table
-                        with st.expander("Raw Metrics Data", expanded=False):
-                            st.dataframe(flight_data)
+                            # Create severity chart
+                            severity = classify_anomaly_severity(anomaly_results)
+                            severity_chart = create_anomaly_severity_chart(flight_data, severity)
+                            
+                            if severity_chart:
+                                st.plotly_chart(severity_chart, use_container_width=True)
+                            
+                            # Create tabs for different visualizations
+                            map_tab, timeline_tab, details_tab = st.tabs([
+                                "Anomaly Map", "Parameter Timelines", "Anomaly Details"
+                            ])
+                            
+                            with map_tab:
+                                # Create map with anomalies highlighted
+                                anomaly_map = create_anomaly_map(
+                                    flight_data, 
+                                    anomaly_results
+                                )
+                                
+                                if anomaly_map:
+                                    folium_static(anomaly_map, width=800, height=500)
+                                else:
+                                    st.warning("Could not create anomaly map")
+                            
+                            with timeline_tab:
+                                # Create parameter timelines with anomalies
+                                if 'baro_altitude' in flight_data.columns and 'altitude' in anomaly_results:
+                                    altitude_chart = create_anomaly_timeline(
+                                        flight_data, anomaly_results, 'baro_altitude'
+                                    )
+                                    if altitude_chart:
+                                        st.plotly_chart(altitude_chart, use_container_width=True)
+                                
+                                if 'velocity' in flight_data.columns and 'velocity' in anomaly_results:
+                                    velocity_chart = create_anomaly_timeline(
+                                        flight_data, anomaly_results, 'velocity'
+                                    )
+                                    if velocity_chart:
+                                        st.plotly_chart(velocity_chart, use_container_width=True)
+                                
+                                if 'heading' in flight_data.columns and 'heading' in anomaly_results:
+                                    heading_chart = create_anomaly_timeline(
+                                        flight_data, anomaly_results, 'heading'
+                                    )
+                                    if heading_chart:
+                                        st.plotly_chart(heading_chart, use_container_width=True)
+                            
+                            with details_tab:
+                                # Get anomaly events
+                                min_anomaly_count = st.slider(
+                                    "Minimum Anomaly Count",
+                                    min_value=1,
+                                    max_value=3,
+                                    value=1,
+                                    help="Minimum number of simultaneous anomalies to include",
+                                    key="metrics_tab_min_anomaly_count"  # Add a unique key
+                                )
+                                
+                                anomaly_events = get_anomaly_timestamps(
+                                    anomaly_results, 
+                                    min_anomaly_count=min_anomaly_count
+                                )
+                                
+                                # Display anomaly details table
+                                display_anomaly_details_table(flight_data, anomaly_events)
+                                
+                                # Show raw anomaly data
+                                with st.expander("Raw Anomaly Data", expanded=False):
+                                    for param, param_results in anomaly_results.items():
+                                        if param != 'overall':
+                                            st.subheader(f"{param.title()} Anomalies")
+                                            
+                                            # Count anomalies by type
+                                            anomaly_counts = {
+                                                anomaly_type: anomaly_series.sum()
+                                                for anomaly_type, anomaly_series in param_results.items()
+                                                if anomaly_type != 'any_anomaly'
+                                            }
+                                            
+                                            # Display as a table
+                                            st.write(pd.Series(anomaly_counts).to_frame('Count'))
+                        else:
+                            st.warning("No anomalies detected for this flight")
                     else:
-                        st.warning(f"No metrics data available for flight {selected_flight}")
+                        st.warning(f"No data available for flight {selected_flight}")
                 else:
-                    st.warning("No metrics data available for analysis")
+                    st.warning("No flight metrics data available for analysis")
             else:
                 st.error("Could not connect to InfluxDB")
         
@@ -1590,6 +1727,187 @@ def main():
                         """)
                     else:
                         st.info("No flight cluster data available")
+        
+        # New Anomaly Detection tab
+        with anomalies_tab:
+            st.subheader("Flight Anomaly Detection")
+            
+            st.markdown("""
+            This feature detects unusual flight behavior that may indicate equipment issues, 
+            dangerous maneuvers, or other anomalies. The system analyzes:
+            
+            - **Statistical Outliers**: Values that deviate significantly from normal patterns
+            - **Sudden Changes**: Rapid shifts in altitude, speed, or heading
+            - **Trend Deviations**: Departures from established flight trajectory patterns
+            - **Physical Inconsistencies**: Behaviors that violate expected aircraft physics
+            """)
+            
+            # Add sensitivity controls
+            with st.expander("Detection Settings", expanded=False):
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    z_threshold = st.slider(
+                        "Statistical Outlier Threshold (σ)",
+                        min_value=1.0,
+                        max_value=5.0,
+                        value=detection_params['altitude']['z_threshold'],
+                        step=0.5,
+                        help="Lower values detect more outliers (more sensitive)"
+                    )
+                
+                with col2:
+                    change_threshold = st.slider(
+                        "Sudden Change Sensitivity",
+                        min_value=1.0,
+                        max_value=5.0,
+                        value=detection_params['altitude']['change_threshold'],
+                        step=0.5,
+                        help="Lower values detect more sudden changes (more sensitive)"
+                    )
+                
+                with col3:
+                    trend_threshold = st.slider(
+                        "Trend Deviation Sensitivity",
+                        min_value=1.0,
+                        max_value=5.0,
+                        value=detection_params['altitude']['trend_threshold'],
+                        step=0.5,
+                        help="Lower values detect more trend deviations (more sensitive)"
+                    )
+                
+                # Update detection parameters dictionary
+                detection_params['altitude']['z_threshold'] = z_threshold
+                detection_params['altitude']['change_threshold'] = change_threshold
+                detection_params['altitude']['trend_threshold'] = trend_threshold
+                detection_params['velocity']['z_threshold'] = z_threshold
+                detection_params['velocity']['change_threshold'] = change_threshold
+                detection_params['velocity']['trend_threshold'] = trend_threshold
+                detection_params['heading']['z_threshold'] = z_threshold
+                detection_params['heading']['change_threshold'] = change_threshold
+            
+            # Analyze flight data
+            influx_client = get_influx_client()
+            if influx_client:
+                query_api = influx_client.query_api()
+                
+                time_range_for_metrics = "1h" if data_source == "Kafka Stream" else time_range
+                
+                with st.spinner("Analyzing flight data for anomalies..."):
+                    metrics_df = query_flight_metrics(query_api, time_range=time_range_for_metrics)
+                
+                if not metrics_df.empty:
+                    # Select a specific flight for anomaly detection
+                    flight_ids = sorted(metrics_df['icao24'].unique())
+                    selected_flight = st.selectbox(
+                        "Select Flight for Analysis", 
+                        flight_ids,
+                        key="anomalies_tab_flight_selector"  # Add a unique key
+                    )
+                    
+                    # Filter for the selected flight
+                    flight_data = metrics_df[metrics_df['icao24'] == selected_flight]
+                    
+                    if not flight_data.empty:
+                        # Run anomaly detection
+                        anomaly_results = analyze_flight_anomalies(flight_data, parameters=detection_params)
+                        
+                        if anomaly_results:
+                            # Get summary statistics
+                            anomaly_summary = get_anomaly_summary(anomaly_results)
+                            
+                            # Display summary cards
+                            create_anomaly_summary_cards(anomaly_summary)
+                            
+                            # Create severity chart
+                            severity = classify_anomaly_severity(anomaly_results)
+                            severity_chart = create_anomaly_severity_chart(flight_data, severity)
+                            
+                            if severity_chart:
+                                st.plotly_chart(severity_chart, use_container_width=True)
+                            
+                            # Create tabs for different visualizations
+                            map_tab, timeline_tab, details_tab = st.tabs([
+                                "Anomaly Map", "Parameter Timelines", "Anomaly Details"
+                            ])
+                            
+                            with map_tab:
+                                # Create map with anomalies highlighted
+                                anomaly_map = create_anomaly_map(
+                                    flight_data, 
+                                    anomaly_results
+                                )
+                                
+                                if anomaly_map:
+                                    folium_static(anomaly_map, width=800, height=500)
+                                else:
+                                    st.warning("Could not create anomaly map")
+                            
+                            with timeline_tab:
+                                # Create parameter timelines with anomalies
+                                if 'baro_altitude' in flight_data.columns and 'altitude' in anomaly_results:
+                                    altitude_chart = create_anomaly_timeline(
+                                        flight_data, anomaly_results, 'baro_altitude'
+                                    )
+                                    if altitude_chart:
+                                        st.plotly_chart(altitude_chart, use_container_width=True)
+                                
+                                if 'velocity' in flight_data.columns and 'velocity' in anomaly_results:
+                                    velocity_chart = create_anomaly_timeline(
+                                        flight_data, anomaly_results, 'velocity'
+                                    )
+                                    if velocity_chart:
+                                        st.plotly_chart(velocity_chart, use_container_width=True)
+                                
+                                if 'heading' in flight_data.columns and 'heading' in anomaly_results:
+                                    heading_chart = create_anomaly_timeline(
+                                        flight_data, anomaly_results, 'heading'
+                                    )
+                                    if heading_chart:
+                                        st.plotly_chart(heading_chart, use_container_width=True)
+                            
+                            with details_tab:
+                                # Get anomaly events
+                                min_anomaly_count = st.slider(
+                                    "Minimum Anomaly Count",
+                                    min_value=1,
+                                    max_value=3,
+                                    value=1,
+                                    help="Minimum number of simultaneous anomalies to include",
+                                    key="anomalies_tab_min_anomaly_count"  # Add a unique key
+                                )
+                                
+                                anomaly_events = get_anomaly_timestamps(
+                                    anomaly_results, 
+                                    min_anomaly_count=min_anomaly_count
+                                )
+                                
+                                # Display anomaly details table
+                                display_anomaly_details_table(flight_data, anomaly_events)
+                                
+                                # Show raw anomaly data
+                                with st.expander("Raw Anomaly Data", expanded=False):
+                                    for param, param_results in anomaly_results.items():
+                                        if param != 'overall':
+                                            st.subheader(f"{param.title()} Anomalies")
+                                            
+                                            # Count anomalies by type
+                                            anomaly_counts = {
+                                                anomaly_type: anomaly_series.sum()
+                                                for anomaly_type, anomaly_series in param_results.items()
+                                                if anomaly_type != 'any_anomaly'
+                                            }
+                                            
+                                            # Display as a table
+                                            st.write(pd.Series(anomaly_counts).to_frame('Count'))
+                        else:
+                            st.warning("No anomalies detected for this flight")
+                    else:
+                        st.warning(f"No data available for flight {selected_flight}")
+                else:
+                    st.warning("No flight metrics data available for analysis")
+            else:
+                st.error("Could not connect to InfluxDB")
     
     # Auto-refresh logic
     if data_source == "Kafka Stream" and auto_refresh:
