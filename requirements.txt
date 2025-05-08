@@ -28,6 +28,7 @@ mapbox>=0.18.0
 matplotlib>=3.6.0
 folium>=0.14.0
 streamlit-folium>=0.15.0
+scipy>=1.10.0
 
 # Configuration & utilities
 python-dotenv>=0.21.0
