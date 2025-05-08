@@ -192,7 +192,9 @@ chmod +x scripts/stop_presentation.sh
    - Offers to stop the Docker containers (InfluxDB and Redpanda)
    - Optionally removes the containers if requested
 
-### 2. Start Infrastructure (Kafka & InfluxDB)
+### 2. Alternatively, launching the application step-by-step:
+
+## 1. Start Infrastructure (Kafka & InfluxDB)
 
 ```bash
 # Start Kafka (Redpanda)
@@ -202,7 +204,7 @@ docker-compose -f kafka/docker-compose.yml up -d
 docker run -d --name influxdb -p 8086:8086 influxdb:2.7
 ```
 
-### 3. Configure InfluxDB
+## 2. Configure InfluxDB
 
 ```bash
 # Create an organization
@@ -215,7 +217,7 @@ TOKEN=$(docker exec influxdb influx auth create --org airspace --all-access | gr
 export INFLUXDB_TOKEN="$TOKEN"
 ```
 
-### 4. Run the Pipeline
+## 3. Run the Pipeline
 
 Start each component in separate terminals:
 
@@ -247,7 +249,7 @@ export MAPBOX_TOKEN="pk.eyJ1IjoiZGVtby1tYXBib3giLCJhIjoiY2xvMGJuMDZ3MHI3ZjJpbnMw
 streamlit run dashboard/opensky_dashboard.py
 ```
 
-### 5. Historical Data Analytics with MongoDB (Optional)
+### 4. Historical Data Analytics with MongoDB (Optional)
 
 The system includes support for historical flight data analytics using MongoDB. This allows you to analyze patterns over time, identify congestion hotspots, and detect risk anomalies.
 
@@ -262,26 +264,22 @@ chmod +x scripts/setup_mongodb.sh
 #### Generate and Import Historical Data
 
 ```bash
-# Generate a week of synthetic historical flight data
-python data/augment_historical_data.py
-
-# Import the data into MongoDB
+# Import the collected jsonl data into MongoDB
 python data/import_to_mongodb.py --drop
 ```
 
 #### Using Historical Analytics in the Dashboard
 
-1. Start the dashboard: `streamlit run dashboard/opensky_dashboard.py`
-2. In the sidebar, select "Flight Metrics" view mode
-3. Navigate to the "Historical Analytics" tab
-4. Explore the following analytics:
+1. In the sidebar, select "Flight Metrics" view mode
+2. Navigate to the "Historical Analytics" tab
+3. Explore the following analytics:
    - **Flight Density Timeline**: Visualize how flight traffic changes over time
    - **Hourly Flight Patterns**: Analyze peak hours and traffic distribution
    - **Daily Flight Patterns**: Compare weekday vs. weekend patterns
    - **Congestion Hotspots**: Identify areas with high flight density
    - **Risk Anomalies**: Detect periods with abnormal risk levels
 
-The historical data spans from April 30 to May 6, 2025, with approximately 475,000 flight records.
+The historical data spans from April 30 to May 6, 2025, with approximately 475,000 flight records. (For testing purposes)
 
 ### MongoDB Integration Architecture
 
@@ -322,15 +320,32 @@ Here's a simplified workflow to get the system running:
    pip install -r requirements.txt
    ```
 
-2. **Start Infrastructure**:
+2. **Start Infrastructure** (2 Options):
 
+  1. **Start and Stop Scripts:**
+     Make the script executable:
+     chmod +x scripts/stop_presentation.sh
+
+     Run the script:
+     ./scripts/stop_presentation.sh
+
+     Make the script executable:
+     chmod +x scripts/start_presentation.sh
+
+     Run the script:
+     ./scripts/start_presentation.sh
+
+     ##OR
+
+ 2. **Launch each services individually:**
+
+   **Start Infrastructure**:
    ```bash
    # Start Kafka and InfluxDB with Docker
    docker-compose -f kafka/docker-compose.yml up -d
    docker run -d --name influxdb -p 8086:8086 influxdb:2.7
    ```
-
-3. **Run Components**:
+   **Run Components**:
 
    ```bash
    # In separate terminals:
@@ -339,8 +354,7 @@ Here's a simplified workflow to get the system running:
    python -m storage.influx_writer
    streamlit run dashboard/opensky_dashboard.py
    ```
-
-4. **Access the Dashboard**:
+   **Access the Dashboard**:
    - Open your browser to http://localhost:8501
 
 ## Historical Data Analytics with MongoDB
