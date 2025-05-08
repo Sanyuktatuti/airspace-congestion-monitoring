@@ -6,6 +6,7 @@ Interactive Streamlit dashboard for visualizing flight data,
 including real-time aircraft positions, metrics, and spatial aggregates.
 """
 import os
+import sys
 import json
 import time
 import datetime
@@ -20,6 +21,9 @@ import matplotlib.pyplot as plt
 import glob
 import plotly.express as px
 import plotly.graph_objects as go
+
+# Import anomaly detection functionality
+from anomaly_detection import analyze_flight_anomalies, get_anomaly_summary, classify_anomaly_severity, get_anomaly_timestamps
 
 # Add folium imports
 import folium
@@ -52,6 +56,9 @@ print(f"Mapbox token: {mapbox_token}")
 # Global variables
 UPDATE_INTERVAL = 3  # seconds
 MAX_FLIGHTS = 5000  # maximum flights to display
+
+# Add the current directory to the Python path
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Helper functions
 @st.cache_resource
@@ -1375,60 +1382,188 @@ def main():
         st.header("Flight Metrics Analysis")
         
         # Add tabs for real-time metrics and historical analytics
-        metrics_tab, historical_tab = st.tabs(["Real-time Metrics", "Historical Analytics"])
+        realtime_anomalies_tab, historical_tab = st.tabs(["Real-time Anomaly Detection", "Historical Analytics"])
         
-        with metrics_tab:
-            influx_client = get_influx_client()
-            if influx_client:
-                query_api = influx_client.query_api()
+        with realtime_anomalies_tab:
+            st.subheader("Real-time Anomaly Detection")
+            
+            # Get Kafka consumer for flight data
+            consumer = get_kafka_consumer("flight-stream")
+            
+            if consumer:
+                with st.spinner("Fetching flight data for anomaly detection..."):
+                    messages = fetch_recent_flights(consumer, max_messages=500)
                 
-                time_range_for_metrics = "1h" if data_source == "Kafka Stream" else time_range
-                
-                with st.spinner("Fetching flight metrics..."):
-                    metrics_df = query_flight_metrics(query_api, time_range=time_range_for_metrics)
-                
-                if not metrics_df.empty:
-                    st.success(f"Analyzing metrics for {metrics_df['icao24'].nunique()} unique flights")
+                if messages:
+                    # Process flight data
+                    df = process_flight_data(messages)
                     
-                    # Select a specific flight for detailed analysis
-                    flight_ids = sorted(metrics_df['icao24'].unique())
-                    selected_flight = st.selectbox("Select Flight for Analysis", flight_ids)
-                    
-                    # Filter for the selected flight
-                    flight_data = metrics_df[metrics_df['icao24'] == selected_flight]
-                    
-                    # Display detailed metrics
-                    if not flight_data.empty:
-                        st.subheader(f"Detailed Metrics for Flight {selected_flight}")
+                    if not df.empty:
+                        # Group by flight (icao24)
+                        flight_groups = df.groupby('icao24')
                         
-                        # Display key metrics in expandable sections
-                        with st.expander("Risk Profile", expanded=True):
-                            if 'avg_risk' in flight_data.columns:
-                                st.line_chart(flight_data.set_index("_time")["avg_risk"])
+                        # Summary stats
+                        total_flights = len(flight_groups)
+                        flights_with_anomalies = 0
+                        total_anomalies = 0
+                        high_severity_anomalies = 0
+                        anomaly_flights = []
                         
-                        with st.expander("Movement Metrics", expanded=True):
-                            movement_cols = [c for c in ['acceleration', 'turn_rate', 'velocity'] 
-                                              if c in flight_data.columns]
+                        # Process each flight
+                        for icao24, flight_data in flight_groups:
+                            # Sort by time if available
+                            if 'fetch_time' in flight_data.columns:
+                                flight_data = flight_data.sort_values('fetch_time')
                             
-                            if movement_cols:
-                                st.line_chart(flight_data.set_index("_time")[movement_cols])
-                        
-                        with st.expander("Altitude Profile", expanded=True):
-                            altitude_cols = [c for c in ['baro_altitude', 'vertical_rate', 'alt_stability_idx'] 
-                                              if c in flight_data.columns]
+                            # Run anomaly detection
+                            anomaly_results = analyze_flight_anomalies(flight_data)
                             
-                            if altitude_cols:
-                                st.line_chart(flight_data.set_index("_time")[altitude_cols])
+                            if anomaly_results and 'overall' in anomaly_results and anomaly_results['overall']['any_anomaly'].any():
+                                # Get anomaly summary
+                                anomaly_summary = get_anomaly_summary(anomaly_results)
+                                severity = classify_anomaly_severity(anomaly_results)
+                                
+                                flights_with_anomalies += 1
+                                total_anomalies += anomaly_summary['total_anomalies']
+                                high_severity_anomalies += (severity >= 3).sum()
+                                
+                                # Store flight info for display
+                                anomaly_flights.append({
+                                    'icao24': icao24,
+                                    'callsign': flight_data['callsign'].iloc[0] if 'callsign' in flight_data.columns else 'Unknown',
+                                    'anomalies': anomaly_summary['total_anomalies'],
+                                    'max_severity': int(severity.max()),
+                                    'anomaly_percentage': anomaly_summary['anomaly_percentage']
+                                })
                         
-                        # Raw data table
-                        with st.expander("Raw Metrics Data", expanded=False):
-                            st.dataframe(flight_data)
+                        # Display summary metrics
+                        col1, col2, col3, col4 = st.columns(4)
+                        with col1:
+                            st.metric("Total Flights", total_flights)
+                        with col2:
+                            st.metric("Flights with Anomalies", flights_with_anomalies)
+                        with col3:
+                            st.metric("Total Anomalies", total_anomalies)
+                        with col4:
+                            st.metric("High Severity Anomalies", high_severity_anomalies)
+                        
+                        # Display flights with anomalies
+                        if anomaly_flights:
+                            st.subheader("Flights with Detected Anomalies")
+                            
+                            # Convert to DataFrame for display
+                            anomaly_df = pd.DataFrame(anomaly_flights)
+                            
+                            # Sort by severity and anomaly count
+                            anomaly_df = anomaly_df.sort_values(['max_severity', 'anomalies'], ascending=[False, False])
+                            
+                            # Color code by severity
+                            def highlight_severity(val):
+                                if val == 3:
+                                    return 'background-color: #ffcccc'  # Red
+                                elif val == 2:
+                                    return 'background-color: #ffffcc'  # Yellow
+                                elif val == 1:
+                                    return 'background-color: #ccffcc'  # Green
+                                return ''
+                            
+                            # Display the table with styling
+                            st.dataframe(anomaly_df.style.applymap(highlight_severity, subset=['max_severity']))
+                            
+                            # Allow selecting a flight for detailed analysis
+                            selected_anomaly_flight = st.selectbox(
+                                "Select Flight for Detailed Anomaly Analysis",
+                                options=anomaly_df['icao24'].tolist(),
+                                format_func=lambda x: f"{x} ({anomaly_df[anomaly_df['icao24'] == x]['callsign'].iloc[0]})"
+                            )
+                            
+                            if selected_anomaly_flight:
+                                # Get the flight data
+                                flight_data = df[df['icao24'] == selected_anomaly_flight]
+                                
+                                if not flight_data.empty:
+                                    st.subheader(f"Anomaly Analysis for Flight {selected_anomaly_flight}")
+                                    
+                                    # Sort by time if available
+                                    if 'fetch_time' in flight_data.columns:
+                                        flight_data = flight_data.sort_values('fetch_time')
+                                    
+                                    # Run anomaly detection again
+                                    anomaly_results = analyze_flight_anomalies(flight_data)
+                                    
+                                    if anomaly_results:
+                                        # Get severity
+                                        severity = classify_anomaly_severity(anomaly_results)
+                                        
+                                        # Display metrics with anomaly highlighting
+                                        for param in ['altitude', 'velocity', 'heading']:
+                                            param_col = 'baro_altitude' if param == 'altitude' else param
+                                            
+                                            if param_col in flight_data.columns and param in anomaly_results:
+                                                st.subheader(f"{param.title()} Anomalies")
+                                                
+                                                fig = px.line(flight_data.reset_index(), 
+                                                             x="fetch_time" if "fetch_time" in flight_data.columns else flight_data.index, 
+                                                             y=param_col, 
+                                                             title=f"{param.title()} Over Time")
+                                                
+                                                # Add anomaly markers
+                                                anomaly_points = flight_data[anomaly_results[param]['any_anomaly']]
+                                                if not anomaly_points.empty:
+                                                    fig.add_scatter(
+                                                        x=anomaly_points["fetch_time"] if "fetch_time" in anomaly_points.columns else anomaly_points.index,
+                                                        y=anomaly_points[param_col],
+                                                        mode='markers',
+                                                        marker=dict(size=10, color='red', symbol='x'),
+                                                        name='Anomalies'
+                                                    )
+                                                
+                                                st.plotly_chart(fig)
+                                                
+                                                # Show anomaly types
+                                                anomaly_types = []
+                                                for anomaly_type, series in anomaly_results[param].items():
+                                                    if anomaly_type != 'any_anomaly' and series.any():
+                                                        anomaly_types.append({
+                                                            'Type': anomaly_type.replace('_', ' ').title(),
+                                                            'Count': series.sum(),
+                                                            'Percentage': f"{(series.sum() / len(series) * 100):.1f}%"
+                                                        })
+                                                
+                                                if anomaly_types:
+                                                    st.write(f"**{param.title()} Anomaly Types:**")
+                                                    st.dataframe(pd.DataFrame(anomaly_types))
+                                        
+                                        # Show raw data with anomalies highlighted
+                                        with st.expander("Raw Flight Data with Anomalies", expanded=False):
+                                            # Add anomaly column to the data
+                                            flight_data_with_anomalies = flight_data.copy()
+                                            flight_data_with_anomalies['has_anomaly'] = anomaly_results['overall']['any_anomaly']
+                                            flight_data_with_anomalies['anomaly_severity'] = severity
+                                            
+                                            # Define styling function
+                                            def highlight_anomalies(row):
+                                                if row['has_anomaly']:
+                                                    if row['anomaly_severity'] == 3:
+                                                        return ['background-color: #ffcccc'] * len(row)  # Red
+                                                    elif row['anomaly_severity'] == 2:
+                                                        return ['background-color: #ffffcc'] * len(row)  # Yellow
+                                                    else:
+                                                        return ['background-color: #ccffcc'] * len(row)  # Green
+                                                return [''] * len(row)
+                                            
+                                            # Display styled dataframe
+                                            st.dataframe(flight_data_with_anomalies.style.apply(highlight_anomalies, axis=1))
+                                    else:
+                                        st.info("No anomalies detected for this flight")
+                        else:
+                            st.info("No anomalies detected in any flights")
                     else:
-                        st.warning(f"No metrics data available for flight {selected_flight}")
+                        st.warning("No valid flight data available for anomaly detection")
                 else:
-                    st.warning("No metrics data available for analysis")
+                    st.warning("No flight data received from Kafka")
             else:
-                st.error("Could not connect to InfluxDB")
+                st.error("Could not connect to Kafka")
         
         with historical_tab:
             st.subheader("Historical Flight Data Analytics")
