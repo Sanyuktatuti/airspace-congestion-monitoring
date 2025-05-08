@@ -24,7 +24,7 @@ import plotly.graph_objects as go
 # Add folium imports
 import folium
 from streamlit_folium import folium_static
-from folium.plugins import HeatMap, MarkerCluster
+from folium.plugins import HeatMap, MarkerCluster, Fullscreen
 
 # Try to load environment variables from .env file
 try:
@@ -75,20 +75,18 @@ def get_influx_client():
 @st.cache_resource
 def get_kafka_consumer(topic="flight-stream"):
     """Connect to Kafka and return the consumer"""
-    bootstrap_servers = os.environ.get('KAFKA_BOOTSTRAP', 'localhost:9092')
+    bootstrap_servers = os.environ.get('KAFKA_BOOTSTRAP', 'localhost:9092')  # Updated to use port 9092
     print(f"Connecting to Kafka at {bootstrap_servers} for topic {topic}")
     
     try:
         consumer = KafkaConsumer(
             topic,
             bootstrap_servers=bootstrap_servers,
-            auto_offset_reset='earliest',  # Changed from 'latest' to not miss messages
+            auto_offset_reset='earliest',
             enable_auto_commit=True,
-            group_id=f'dashboard-consumer-{topic}',  # Unique group ID per topic
+            group_id=None,  # Remove group ID to always read all messages
             value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-            consumer_timeout_ms=3000,  # Increased timeout to 3s
-            session_timeout_ms=10000,  # Added session timeout
-            max_poll_interval_ms=300000  # Added max poll interval
+            consumer_timeout_ms=3000
         )
         print(f"Successfully connected to Kafka topic {topic}")
         return consumer
@@ -138,7 +136,7 @@ def query_grid_metrics(query_api, bucket="flight_metrics", time_range="5m"):
         st.error(f"Error querying grid metrics: {e}")
         return pd.DataFrame()
 
-def fetch_recent_flights(consumer, max_messages=1000, timeout_sec=5):  # Increased limits
+def fetch_recent_flights(consumer, max_messages=1000, timeout_sec=15):
     """Fetch recent flight data from Kafka stream"""
     messages = []
     start_time = time.time()
@@ -146,16 +144,50 @@ def fetch_recent_flights(consumer, max_messages=1000, timeout_sec=5):  # Increas
     try:
         print(f"Fetching messages from Kafka (max: {max_messages}, timeout: {timeout_sec}s)")
         while len(messages) < max_messages and (time.time() - start_time) < timeout_sec:
-            msg_batch = consumer.poll(timeout_ms=1000, max_records=max_messages)
+            msg_batch = consumer.poll(timeout_ms=3000, max_records=max_messages)
             if not msg_batch:
                 print("No messages in this batch")
                 continue
             
             print(f"Received batch of {sum(len(records) for records in msg_batch.values())} messages")
-            for _, records in msg_batch.items():
+            for topic_partition, records in msg_batch.items():
+                print(f"  - Topic: {topic_partition.topic}, Partition: {topic_partition.partition}, Records: {len(records)}")
                 for record in records:
-                    if isinstance(record.value, dict):
-                        messages.append(record.value)
+                    if record.value:  # Add null check
+                        try:
+                            # Try to parse the message
+                            if isinstance(record.value, dict):
+                                messages.append(record.value)
+                            elif isinstance(record.value, str):
+                                # Try to parse JSON string
+                                # Fix missing commas in JSON - common issue with grid data
+                                fixed_json = record.value.replace('"\n"', '",\n"')
+                                fixed_json = fixed_json.replace('""', '","')
+                                try:
+                                    messages.append(json.loads(fixed_json))
+                                except:
+                                    # If that fails, try the original
+                                    messages.append(json.loads(record.value))
+                            else:
+                                print(f"Unknown message type: {type(record.value)}")
+                                messages.append(record.value)
+                        except Exception as e:
+                            print(f"Error parsing message: {e}")
+                            # Try to fix common JSON issues in grid data
+                            if isinstance(record.value, str):
+                                try:
+                                    # Fix missing commas between key-value pairs
+                                    fixed_value = record.value.replace('"\n"', '",\n"')
+                                    # Replace double quotes between values and keys with comma + quote
+                                    fixed_value = fixed_value.replace('"}"', '"},"')
+                                    # Try to parse the fixed JSON
+                                    parsed = json.loads(fixed_value)
+                                    messages.append(parsed)
+                                    print("Successfully fixed and parsed JSON")
+                                except Exception as e2:
+                                    print(f"Failed to fix JSON: {e2}")
+                                    # Still add the raw message for debugging
+                                    messages.append({"raw_value": record.value})
         
         print(f"Total messages fetched: {len(messages)}")
         return messages
@@ -164,49 +196,54 @@ def fetch_recent_flights(consumer, max_messages=1000, timeout_sec=5):  # Increas
         print(f"Error fetching messages: {str(e)}")
         return []
 
-# def process_flight_data(messages):
-#     """Convert Kafka messages to a DataFrame"""
-#     if not messages:
-#         return pd.DataFrame()
-    
-#     # Convert to DataFrame
-#     df = pd.DataFrame(messages)
-    
-#     # Clean up data
-#     for col in ['longitude', 'latitude', 'baro_altitude', 'velocity', 'vertical_rate']:
-#         if col in df.columns:
-#             df[col] = pd.to_numeric(df[col], errors='coerce')
-    
-#     # Filter out invalid coordinates
-#     df = df.dropna(subset=['longitude', 'latitude'])
-    
-#     return df
 def process_flight_data(messages):
     """Convert Kafka messages to a DataFrame"""
     if not messages:
         return pd.DataFrame()
     
     # ── flatten nested payloads (new format wraps under "value")
-    df = pd.DataFrame([ msg.get("value", msg) for msg in messages ])
+    # First, fix any JSON formatting issues in messages
+    fixed_messages = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            # Check if this is a grid message (has lat_bin, lon_bin)
+            if 'lat_bin' in msg and 'lon_bin' in msg:
+                # Ensure all fields are properly formatted
+                fixed_msg = {}
+                for k, v in msg.items():
+                    fixed_msg[k] = v
+                fixed_messages.append(fixed_msg)
+            else:
+                # Regular flight message
+                fixed_messages.append(msg.get("value", msg))
+    
+    # Create DataFrame from fixed messages
+    df = pd.DataFrame(fixed_messages)
     
     # ── convert fetch_time (ms) into datetime, coercing bad values
     if "fetch_time" in df.columns:
         df["fetch_time"] = pd.to_datetime(df["fetch_time"], unit="ms", errors="coerce")
     
     # ── Clean numeric columns & replace nulls with zero
-    for col in ['longitude', 'latitude', 'baro_altitude', 'velocity', 'vertical_rate']:
+    for col in ['longitude', 'latitude', 'baro_altitude', 'velocity', 'vertical_rate', 
+                'lat_bin', 'lon_bin', 'flight_count', 'avg_risk']:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
     
-    # ── Drop rows with no valid coords
-    df = df.dropna(subset=['longitude', 'latitude'])
+    # ── Drop rows with no valid coords (for flight data) or bin info (for grid data)
+    if 'lat_bin' in df.columns and 'lon_bin' in df.columns:
+        # Grid data
+        df = df.dropna(subset=['lat_bin', 'lon_bin'])
+    elif 'longitude' in df.columns and 'latitude' in df.columns:
+        # Flight data
+        df = df.dropna(subset=['longitude', 'latitude'])
     
     # ── Fill common string fields so UI shows empty strings instead of NaN
     for col in ['icao24', 'callsign', 'origin_country', 'squawk', 'position_source']:
         if col in df.columns:
             df[col] = df[col].fillna("")
 
-# ── Handle airline names: show "No Data Available" if missing or blank
+    # ── Handle airline names: show "No Data Available" if missing or blank
     # ── Extract airline from nested aircraft metadata (fallback: No Data Available)
     if 'aircraft' in df.columns:
         df['airline'] = df['aircraft'].apply(
@@ -221,95 +258,89 @@ def create_flight_map(df, risk_column=None):
     if df.empty:
         return None
     
-    try:
-        # Try PyDeck first
-        # Default column for coloring if risk score not available
-        if risk_column in df.columns:
-            color_by = risk_column
-        elif 'velocity' in df.columns:
-            color_by = 'velocity'
-        else:
-            df['default_color'] = 0.5
-            color_by = 'default_color'
-        
-        # Normalize values for coloring
-        min_val = df[color_by].min()
-        max_val = df[color_by].max()
-        range_val = max(1.0, max_val - min_val)
-        
-        def get_color(val):
-            if pd.isna(val):
-                return [100, 100, 100]
-            normalized = (val - min_val) / range_val
-            if color_by == 'risk_score':
-                r = int(255 * normalized)
-                g = int(255 * (1 - normalized))
-                return [r, g, 0]
-            elif color_by == 'velocity':
-                r = int(255 * normalized)
-                b = int(255 * (1 - normalized))
-                return [r, 0, b]
-            else:
-                return [0, 0, 255]
-        
-        df['color'] = df[color_by].apply(get_color)
-        
-        flight_layer = pdk.Layer(
-            "ScatterplotLayer",
-            data=df,
-            get_position=["longitude", "latitude"],
-            get_fill_color="color",
-            get_radius=3000,
-            pickable=True,
-            opacity=0.8,
-            stroked=True,
-            filled=True,
-            radius_scale=6,
-            radius_min_pixels=5,
-            radius_max_pixels=100,
-            line_width_min_pixels=1
-        )
-
-        view_state = pdk.ViewState(
-            latitude=df["latitude"].mean(),
-            longitude=df["longitude"].mean(),
-            zoom=4,
-            pitch=0
-        )
-
-        deck = pdk.Deck(
-            map_style="light",
-            initial_view_state=view_state,
-            layers=[flight_layer],
-            tooltip={
-                "html": """
-                <div style="font-family: Arial; padding: 10px; background-color: rgba(0, 0, 0, 0.7); color: white; border-radius: 5px;">
-                    <b>ICAO24:</b> {icao24}<br/>
-                    """ + 
-                    ("""<b>Flight:</b> {callsign}<br/>""" if 'callsign' in df.columns else "") +
-                    ("""<b>Country:</b> {origin_country}<br/>""" if 'origin_country' in df.columns else "") +
-                    ("""<b>Altitude:</b> {baro_altitude} m<br/>""" if 'baro_altitude' in df.columns else "") +
-                    ("""<b>Speed:</b> {velocity} m/s<br/>""" if 'velocity' in df.columns else "") +
-                    ("""<b>Climb Rate:</b> {vertical_rate} m/s<br/>""" if 'vertical_rate' in df.columns else "") +
-                    ("""<b>Risk Score:</b> {risk_score}""" if 'risk_score' in df.columns else "") +
-                """
-                </div>
-                """,
-                "style": {"color": "white"}
-            }
-        )
-        
-        try:
-            st.pydeck_chart(deck)
-            return True
-        except Exception as e:
-            st.warning("PyDeck map failed to render, falling back to basic map")
-            return False
-            
-    except Exception as e:
-        st.error(f"Error creating flight map: {e}")
-        return None
+    # Default column for coloring if risk score not available
+    if risk_column in df.columns:
+        color_by = risk_column
+    elif 'velocity' in df.columns:
+        color_by = 'velocity'
+    else:
+        df['default_color'] = 0.5
+        color_by = 'default_color'
     
+    # Normalize values for coloring
+    min_val = df[color_by].min()
+    max_val = df[color_by].max()
+    range_val = max(1.0, max_val - min_val)
+    
+    def get_color(val):
+        if pd.isna(val):
+            return [100, 100, 100]
+        normalized = (val - min_val) / range_val
+        if color_by == 'risk_score':
+            r = int(255 * normalized)
+            g = int(255 * (1 - normalized))
+            return [r, g, 0]
+        elif color_by == 'velocity':
+            r = int(255 * normalized)
+            b = int(255 * (1 - normalized))
+            return [r, 0, b]
+        else:
+            return [0, 0, 255]
+    
+    df['color'] = df[color_by].apply(get_color)
+    
+    flight_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=df,
+        get_position=["longitude", "latitude"],
+        get_fill_color="color",
+        get_radius=3000,
+        pickable=True,
+        opacity=0.8,
+        stroked=True,
+        filled=True,
+        radius_scale=6,
+        radius_min_pixels=5,
+        radius_max_pixels=100,
+        line_width_min_pixels=1
+    )
+    
+    view_state = pdk.ViewState(
+        latitude=df["latitude"].mean(),
+        longitude=df["longitude"].mean(),
+        zoom=4,
+        pitch=0
+    )
+    
+    deck = pdk.Deck(
+        map_style="light",
+        initial_view_state=view_state,
+        layers=[flight_layer],
+        tooltip={
+            "html": """
+            <div style="font-family: Arial; padding: 10px; background-color: rgba(0, 0, 0, 0.7); color: white; border-radius: 5px;">
+                <b>ICAO24:</b> {icao24}<br/>
+                """ + 
+                ("""<b>Flight:</b> {callsign}<br/>""" if 'callsign' in df.columns else "") +
+                ("""<b>Country:</b> {origin_country}<br/>""" if 'origin_country' in df.columns else "") +
+                ("""<b>Altitude:</b> {baro_altitude} m<br/>""" if 'baro_altitude' in df.columns else "") +
+                ("""<b>Speed:</b> {velocity} m/s<br/>""" if 'velocity' in df.columns else "") +
+                ("""<b>Climb Rate:</b> {vertical_rate} m/s<br/>""" if 'vertical_rate' in df.columns else "") +
+                ("""<b>Risk Score:</b> {risk_score}""" if 'risk_score' in df.columns else "") +
+            """
+            </div>
+            """,
+            "style": {"color": "white"}
+        }
+    )
+    
+    try:
+        st.pydeck_chart(deck)
+        return True
+    except Exception as e:
+        st.warning("PyDeck map failed to render, falling back to basic map")
+        return False
+
 def display_basic_map(df):
     """Display a basic map using Streamlit's built-in map function"""
     if not df.empty and 'latitude' in df.columns and 'longitude' in df.columns:
@@ -324,80 +355,7 @@ def display_basic_map(df):
         #     ]
         #     available_cols = [c for c in display_cols if c in df.columns]
         #     st.dataframe(df[available_cols])
-
-def create_grid_heatmap(df):
-    """Create a heatmap of flight density by grid cell"""
-    if df.empty:
-        print("Warning: Empty dataframe passed to create_grid_heatmap")
-        return None
-    
-    print(f"Creating heatmap with {len(df)} grid cells")
-    print("Columns available:", df.columns.tolist())
-    
-    # Convert lat/lon bins to coordinates
-    if 'lat_bin' in df.columns and 'lon_bin' in df.columns:
-        # Create center points from grid cells
-        df['latitude'] = (df['lat_bin'] + 0.5) - 90
-        df['longitude'] = (df['lon_bin'] + 0.5) - 180
-        print("Converted grid cells to coordinates")
-        print("Sample data:", df[['lat_bin', 'lon_bin', 'latitude', 'longitude', 'flight_count']].head())
-    else:
-        print("Error: Missing lat_bin or lon_bin columns")
-        return None
-
-    # Create a scatter plot layer instead of heatmap
-    scatter_layer = pdk.Layer(
-        "ScatterplotLayer",
-        df,
-        get_position=['longitude', 'latitude'],
-        get_radius='flight_count * 5000',  # Scale the size based on flight count
-        get_fill_color=[255, 140, 0, 140],  # Orange with some transparency
-        pickable=True
-    )
-    
-    # Create the deck
-    deck = pdk.Deck(
-        map_style='mapbox://styles/mapbox/dark-v10',
-        initial_view_state=pdk.ViewState(
-            latitude=20,
-            longitude=0,
-            zoom=1,
-            pitch=0,
-        ),
-        layers=[scatter_layer],
-        tooltip={
-            "html": "<b>Flights:</b> {flight_count}<br/><b>Risk:</b> {avg_risk:.2f}"
-        }
-    )
-    
-    return deck
-
-def display_metrics_charts(metrics_df):
-    """Display charts for key flight metrics"""
-    if metrics_df.empty:
-        st.warning("No metrics data available")
-        return
-    
-    # Filter out non-numeric columns
-    numeric_df = metrics_df.select_dtypes(include=[np.number])
-    
-    # Group of key metrics to visualize
-    key_metrics = ['avg_risk', 'acceleration', 'turn_rate', 'alt_stability_idx']
-    available_metrics = [m for m in key_metrics if m in numeric_df.columns]
-    
-    if not available_metrics:
-        st.warning("No numeric metrics available to chart")
-        return
-    
-    # Layout with multiple charts
-    cols = st.columns(min(len(available_metrics), 4))
-    
-    for i, metric in enumerate(available_metrics):
-        with cols[i % len(cols)]:
-            st.subheader(f"{metric.replace('_', ' ').title()}")
-            st.line_chart(numeric_df[metric])
-
-# Create a Folium-based map function
+        
 def create_folium_flight_map(df, risk_column=None):
     """Create a Folium map visualization of flights"""
     if df.empty:
@@ -474,108 +432,87 @@ def create_folium_grid_heatmap(df):
     if df.empty:
         print("Warning: Empty dataframe passed to create_folium_grid_heatmap")
         return None
-    
+
     try:
-        # Convert lat/lon bins to coordinates if needed
-        if 'lat_bin' in df.columns and 'lon_bin' in df.columns and 'latitude' not in df.columns:
-            # Create center points from grid cells
-            df['latitude'] = (df['lat_bin'] + 0.5) - 90
-            df['longitude'] = (df['lon_bin'] + 0.5) - 180
+        # Create base map centered on the data
+        center_lat = df['latitude'].mean()
+        center_lon = df['longitude'].mean()
         
-        # Filter out NaN values in coordinates
-        df = df.dropna(subset=['latitude', 'longitude'])
+        # Create map with a dark theme for better contrast
+        m = folium.Map(
+            location=[center_lat, center_lon],
+            zoom_start=4,
+            tiles='cartodbdark_matter'
+        )
+
+        # Add fullscreen control
+        Fullscreen(position='topright').add_to(m)
         
-        if df.empty:
-            print("Warning: No valid coordinates after filtering NaNs")
-            return None
+        # Prepare heatmap data - must be a list of [lat, lon, intensity]
+        heat_data = []
         
-        # Check for flight count column
-        if 'flight_count' in df.columns:
-            # Use flight count as weight
-            heat_data = [[row.latitude, row.longitude, row.flight_count] for i, row in df.iterrows() 
-                        if not pd.isna(row.latitude) and not pd.isna(row.longitude) and not pd.isna(row.flight_count)]
-        else:
-            # No weight, just use coordinates
-            heat_data = [[row.latitude, row.longitude] for i, row in df.iterrows()
-                        if not pd.isna(row.latitude) and not pd.isna(row.longitude)]
+        # Normalize flight counts for intensity
+        max_flights = df['flight_count'].max()
         
-        if not heat_data:
-            print("Warning: No valid data points for heatmap")
-            return None
-            
-        # Create basic map centered on the data
-        center_lat = df["latitude"].mean()
-        center_lon = df["longitude"].mean()
-        
-        # Fallback to default center if NaN
-        if pd.isna(center_lat) or pd.isna(center_lon):
-            center_lat, center_lon = 0, 0
-            
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=2)
-        
-        # Add the heatmap
-        HeatMap(heat_data).add_to(m)
-        
+        for _, row in df.iterrows():
+            try:
+                lat = float(row['latitude'])
+                lon = float(row['longitude'])
+                # Normalize intensity between 0 and 1
+                intensity = float(row['flight_count']) / max_flights if max_flights > 0 else 0
+                heat_data.append([lat, lon, intensity])
+            except (ValueError, TypeError) as e:
+                print(f"Error processing row: {e}")
+                continue
+
+        # Add heatmap layer with custom gradient - KEYS MUST BE STRINGS for Folium
+        HeatMap(
+            data=heat_data,
+            min_opacity=0.2,
+            max_opacity=0.9,
+            radius=25,
+            blur=15,
+            gradient={
+                "0.2": "#1a1a1a",  # Very dark gray for low density
+                "0.4": "#0077b6",  # Dark blue
+                "0.6": "#00b4d8",  # Light blue
+                "0.8": "#ff9e00",  # Orange
+                "1.0": "#ff0000"   # Red for high density
+            }
+        ).add_to(m)
+
         return m
+
     except Exception as e:
-        st.error(f"Error creating Folium heatmap: {e}")
-        print(f"Folium heatmap error details: {str(e)}")
+        import traceback
+        print(f"Error creating grid heatmap: {str(e)}")
+        print(traceback.format_exc())
         return None
 
-def create_matplotlib_heatmap(df):
-    """Create a Matplotlib heatmap of flight density by grid cell"""
-    if df.empty:
-        st.warning("No data available for heatmap visualization")
+def display_metrics_charts(metrics_df):
+    """Display charts for key flight metrics"""
+    if metrics_df.empty:
+        st.warning("No metrics data available")
         return
     
-    # Check if we have the necessary columns
-    if 'lat_bin' not in df.columns or 'lon_bin' not in df.columns:
-        if 'latitude' in df.columns and 'longitude' in df.columns:
-            # Create bins from coordinates
-            df['lat_bin'] = (df['latitude'] + 90).astype(int)
-            df['lon_bin'] = (df['longitude'] + 180).astype(int)
-        else:
-            st.error("Missing coordinate data for heatmap")
-            return
+    # Filter out non-numeric columns
+    numeric_df = metrics_df.select_dtypes(include=[np.number])
     
-    # Check if we have flight count
-    if 'flight_count' not in df.columns:
-        # Count occurrences in each grid cell
-        flight_counts = df.groupby(['lat_bin', 'lon_bin']).size().reset_index(name='flight_count')
-        df = flight_counts
+    # Group of key metrics to visualize
+    key_metrics = ['avg_risk', 'acceleration', 'turn_rate', 'alt_stability_idx']
+    available_metrics = [m for m in key_metrics if m in numeric_df.columns]
     
-    try:
-        # Create pivot table for heatmap
-        pivoted = df.pivot_table(
-            index='lat_bin', 
-            columns='lon_bin', 
-            values='flight_count',
-            aggfunc='max',
-            fill_value=0
-        )
-        
-        # Create the plot
-        fig, ax = plt.subplots(figsize=(10, 6))
-        im = ax.imshow(pivoted, cmap='viridis', interpolation='none', aspect='auto')
-        plt.colorbar(im, ax=ax, label='Flight Count')
-        
-        # Add labels and title
-        ax.set_xlabel('Longitude Bin')
-        ax.set_ylabel('Latitude Bin')
-        ax.set_title('Flight Density Heatmap')
-        
-        # Display in Streamlit
-        st.pyplot(fig)
-        
-    except Exception as e:
-        st.error(f"Error creating Matplotlib heatmap: {e}")
-        print(f"Matplotlib heatmap error details: {str(e)}")
-        
-        # Last resort: display the raw data
-        st.write("Raw Grid Data:")
-        display_cols = ["lat_bin", "lon_bin", "flight_count"]
-        available_cols = [c for c in display_cols if c in df.columns]
-        st.dataframe(df[available_cols])
+    if not available_metrics:
+        st.warning("No numeric metrics available to chart")
+        return
+    
+    # Layout with multiple charts
+    cols = st.columns(min(len(available_metrics), 4))
+    
+    for i, metric in enumerate(available_metrics):
+        with cols[i % len(cols)]:
+            st.subheader(f"{metric.replace('_', ' ').title()}")
+            st.line_chart(numeric_df[metric])
 
 # Helper functions for historical analytics
 def load_json_files(path_pattern):
@@ -922,6 +859,146 @@ def run_historical_analytics():
         st.error(f"Failed to run historical analytics: {e}")
         return False
 
+def check_kafka_topic(topic, bootstrap_servers="localhost:9092"):
+    """Check if a Kafka topic exists and has data"""
+    try:
+        from kafka.admin import KafkaAdminClient, NewTopic
+        from kafka import KafkaConsumer
+        import json
+        
+        # Try to get a consumer for the topic
+        consumer = KafkaConsumer(
+            topic,
+            bootstrap_servers=bootstrap_servers,
+            auto_offset_reset='earliest',
+            consumer_timeout_ms=5000,
+            value_deserializer=lambda m: json.loads(m.decode('utf-8')) if m else None
+        )
+        
+        # Check if the topic exists
+        topics = consumer.topics()
+        if topic not in topics:
+            return {
+                "exists": False,
+                "message": f"Topic '{topic}' does not exist",
+                "topics": list(topics)
+            }
+        
+        # Try to get a message from the topic
+        messages = []
+        for i, message in enumerate(consumer):
+            if i >= 1:  # Just get one message
+                break
+            messages.append(message.value)
+        
+        consumer.close()
+        
+        if messages:
+            return {
+                "exists": True,
+                "has_data": True,
+                "message": f"Topic '{topic}' exists and has data",
+                "sample": messages[0]
+            }
+        else:
+            return {
+                "exists": True,
+                "has_data": False,
+                "message": f"Topic '{topic}' exists but has no data"
+            }
+    except Exception as e:
+        return {
+            "exists": None,
+            "error": str(e),
+            "message": f"Error checking topic '{topic}': {e}"
+        }
+
+def process_grid_data(messages):
+    """Convert Kafka grid messages to a DataFrame"""
+    if not messages:
+        return pd.DataFrame()
+    
+    # Fix any formatting issues in the messages
+    fixed_messages = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            # Check if this looks like a grid message
+            if any(key in msg for key in ['lat_bin', 'lon_bin', 'flight_count']):
+                fixed_msg = {}
+                for k, v in msg.items():
+                    # Clean up any string values that should be numeric
+                    if k in ['lat_bin', 'lon_bin', 'flight_count']:
+                        try:
+                            fixed_msg[k] = int(str(v).strip())
+                        except (ValueError, TypeError):
+                            continue
+                    elif k == 'avg_risk':
+                        try:
+                            fixed_msg[k] = float(str(v).strip())
+                        except (ValueError, TypeError):
+                            fixed_msg[k] = 0.0
+                    else:
+                        fixed_msg[k] = str(v).strip()
+                if all(k in fixed_msg for k in ['lat_bin', 'lon_bin', 'flight_count']):
+                    fixed_messages.append(fixed_msg)
+        elif isinstance(msg, str):
+            # Try to fix malformed JSON
+            try:
+                # Add missing commas between key-value pairs
+                fixed_json = msg.replace('"\n"', '",\n"')
+                fixed_json = fixed_json.replace('""', '","')
+                # Ensure proper JSON structure
+                if not fixed_json.startswith('{'):
+                    fixed_json = '{' + fixed_json
+                if not fixed_json.endswith('}'):
+                    fixed_json = fixed_json + '}'
+                # Parse the fixed JSON
+                parsed_msg = json.loads(fixed_json)
+                if any(key in parsed_msg for key in ['lat_bin', 'lon_bin', 'flight_count']):
+                    fixed_msg = {}
+                    for k, v in parsed_msg.items():
+                        if k in ['lat_bin', 'lon_bin', 'flight_count']:
+                            try:
+                                fixed_msg[k] = int(str(v).strip())
+                            except (ValueError, TypeError):
+                                continue
+                        elif k == 'avg_risk':
+                            try:
+                                fixed_msg[k] = float(str(v).strip())
+                            except (ValueError, TypeError):
+                                fixed_msg[k] = 0.0
+                        else:
+                            fixed_msg[k] = str(v).strip()
+                    if all(k in fixed_msg for k in ['lat_bin', 'lon_bin', 'flight_count']):
+                        fixed_messages.append(fixed_msg)
+            except json.JSONDecodeError as e:
+                print(f"Error parsing JSON message: {e}")
+                continue
+    
+    # Create DataFrame
+    df = pd.DataFrame(fixed_messages)
+    
+    # Convert numeric columns
+    if not df.empty:
+        # Convert grid coordinates to map coordinates
+        df['latitude'] = df['lat_bin'].astype(float).apply(lambda x: (x - 90) + 0.5)
+        df['longitude'] = df['lon_bin'].astype(float).apply(lambda x: (x - 180) + 0.5)
+        
+        # Ensure flight_count is numeric
+        df['flight_count'] = pd.to_numeric(df['flight_count'], errors='coerce')
+        
+        # Drop any rows with missing essential data
+        df = df.dropna(subset=['latitude', 'longitude', 'flight_count'])
+        
+        # Print debug info
+        print(f"Processed {len(df)} valid grid cells")
+        print("DataFrame info:")
+        print(df.info())
+        print("\nSample data:")
+        print(df.head())
+    
+    return df
+
 def main():
     """Main dashboard application"""
     # Sidebar for controls
@@ -952,12 +1029,6 @@ def main():
     data_source = st.sidebar.radio(
         "Data Source",
         ["Kafka Stream", "InfluxDB Historical"]
-    )
-    
-    # Map provider selection
-    map_provider = st.sidebar.radio(
-        "Map Provider",
-        ["Folium Map", "PyDeck (Original)"]
     )
     
     # Time range for historical data
@@ -1012,15 +1083,11 @@ def main():
                         df = df[df['risk_score'] <= max_risk]
 
                     # Map rendering
-                    if map_provider == "Folium Map":
-                        m = create_folium_flight_map(df, risk_column='risk_score')
-                        if m:
-                            folium_static(m)
-                        else:
-                            display_basic_map(df)
+                    m = create_folium_flight_map(df, risk_column='risk_score')
+                    if m:
+                        folium_static(m)
                     else:
-                        if not create_flight_map(df, risk_column='risk_score'):
-                            display_basic_map(df)
+                        display_basic_map(df)
 
                     # Stats
                     st.subheader("Flight Statistics")
@@ -1060,17 +1127,12 @@ def main():
                     if 'avg_risk' in metrics_df.columns:
                         metrics_df = metrics_df[metrics_df['avg_risk'] <= max_risk]
                     
-                    # Select map provider
-                    if map_provider == "Folium Map":
-                        m = create_folium_flight_map(metrics_df, risk_column='avg_risk')
-                        if m:
-                            folium_static(m)
-                        else:
-                            display_basic_map(metrics_df)
+                    # Map rendering
+                    m = create_folium_flight_map(metrics_df, risk_column='avg_risk')
+                    if m:
+                        folium_static(m)
                     else:
-                        # Try PyDeck first, fall back to basic map if it fails
-                        if not create_flight_map(metrics_df, risk_column='avg_risk'):
-                            display_basic_map(metrics_df)
+                        display_basic_map(metrics_df)
                     
                     # Display metrics
                     display_metrics_charts(metrics_df)
@@ -1079,291 +1141,233 @@ def main():
             else:
                 st.error("Could not connect to InfluxDB")
     
-    # elif view_mode == "Grid Heatmap":
-    #     st.header("Flight Density Heatmap")
-        
-    #     if data_source == "Kafka Stream":
-    #         # Create a fresh consumer so we always start from earliest on each rerun
-    #         # consumer = KafkaConsumer(
-    #         #     "flight-aggregates",
-    #         #     bootstrap_servers=os.environ.get('KAFKA_BOOTSTRAP','localhost:9092'),
-    #         #     auto_offset_reset='earliest',
-    #         #     enable_auto_commit=False,
-    #         #     group_id=None,
-    #         #     value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-    #         #     consumer_timeout_ms=3000
-    #         # )
-    #         # 1) Create a “bare” consumer with no topic subscription:
-    #         consumer = KafkaConsumer(
-    #             bootstrap_servers=os.environ.get('KAFKA_BOOTSTRAP','localhost:9092'),
-    #             auto_offset_reset='earliest',
-    #             enable_auto_commit=False,
-    #             group_id=None,
-    #             value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-    #             consumer_timeout_ms=3000
-    #         )
-    #         # 2) Manually assign all partitions of the flight-aggregates topic:
-    #         from kafka import TopicPartition
-
-    #         parts = consumer.partitions_for_topic("flight-aggregates")
-    #         if parts:
-    #             tps = [TopicPartition("flight-aggregates", p) for p in parts]
-    #             consumer.assign(tps)
-    #             consumer.seek_to_beginning(*tps)
-    #         else:
-    #             st.warning("Topic 'flight-aggregates' has no partitions or doesn't exist")
-    #         from kafka import TopicPartition
-
-    #         # Manually assign all partitions of 'flight-aggregates'
-    #         parts = consumer.partitions_for_topic("flight-aggregates")
-    #         if parts:
-    #             tps = [TopicPartition("flight-aggregates", p) for p in parts]
-    #             consumer.assign(tps)
-    #             consumer.seek_to_beginning(*tps)
-    #         else:
-    #             st.warning("Topic 'flight-aggregates' has no partitions or doesn't exist")
-    #         # consumer.subscribe(["flight-aggregates"])
-    #         # consumer.poll(timeout_ms=0)
-    #         # consumer.seek_to_beginning()
-    #         # from kafka import TopicPartition
-
-    #         # # ── Manually assign all partitions for the topic, then rewind
-    #         # partitions = consumer.partitions_for_topic("flight-aggregates")
-    #         # if partitions:
-    #         #     tps = [TopicPartition("flight-aggregates", p) for p in partitions]
-    #         #     consumer.assign(tps)
-    #         #     consumer.seek_to_beginning(*tps)
-    #         # else:
-    #         #     st.warning("Topic 'flight-aggregates' has no partitions or doesn't exist")
-    #         if consumer:
-    #             with st.spinner("Fetching spatial aggregates..."):
-    #                 messages = fetch_recent_flights(consumer, max_messages=1000)
-
-    #             # ── DEBUG: show message count & sample
-    #             st.write(f"🔍 Fetched {len(messages) if messages is not None else 'None'} aggregate messages")
-    #             st.write("📋 Raw aggregates preview:", messages[:5])
-
-    #             df = pd.DataFrame()
-    #             if messages:
-    #                 # Flatten the envelope
-    #                 df = pd.DataFrame([msg.get("value", msg) for msg in messages])
-
-    #                 # Coerce numeric columns & fill missing with 0
-    #                 for col in ['lat_bin', 'lon_bin', 'avg_risk', 'flight_count']:
-    #                     if col in df.columns:
-    #                         df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-
-    #                 # Parse window timestamps if present
-    #                 if 'window_start' in df.columns:
-    #                     df['window_start'] = pd.to_datetime(df['window_start'], errors='coerce')
-    #                 if 'window_end' in df.columns:
-    #                     df['window_end'] = pd.to_datetime(df['window_end'], errors='coerce')
-
-    #                 if not df.empty:
-    #                     st.success(f"Displaying {len(df)} grid cells (Kafka)")
-    #                     m = create_folium_grid_heatmap(df)
-    #                     if m:
-    #                         folium_static(m)
-
-    #                         # ── Grid Statistics
-    #                         st.subheader("Grid Statistics")
-    #                         c1, c2 = st.columns(2)
-    #                         with c1:
-    #                             st.metric("Active Grid Cells", len(df))
-    #                         with c2:
-    #                             if 'avg_risk' in df.columns:
-    #                                 st.metric("Avg Cell Risk", f"{df['avg_risk'].mean():.2f}")
-        
-    #                         # ── Raw Grid Data
-    #                         with st.expander("Raw Grid Data", expanded=False):
-    #                             display_cols = ["lat_bin", "lon_bin", "flight_count", "avg_risk"]
-    #                             available = [c for c in display_cols if c in df.columns]
-    #                             st.dataframe(df[available])
-    #                     else:
-    #                         st.error("Failed to render Kafka grid heatmap")
-
-    #                 else:
-    #                     st.warning("No aggregates in Kafka – falling back to InfluxDB")
-    #                     # ── FALLBACK to InfluxDB if Kafka is empty
-    #                     influx_client = get_influx_client()
-    #                     if influx_client:
-    #                         query_api = influx_client.query_api()
-    #                         grid_df = query_grid_metrics(query_api, time_range=time_range)
-    #                         if not grid_df.empty:
-    #                             st.success(f"Displaying {len(grid_df)} grid cells (InfluxDB)")
-    #             m2 = create_folium_grid_heatmap(grid_df)
-    #             if m2:
-    #                 folium_static(m2)
-
-    #                 # ── Grid Statistics (InfluxDB)
-    #                 st.subheader("Grid Statistics (InfluxDB)")
-    #                 c1, c2 = st.columns(2)
-    #                 with c1:
-    #                     st.metric("Active Grid Cells", len(grid_df))
-    #                 with c2:
-    #                     if 'avg_risk' in grid_df.columns:
-    #                         st.metric("Avg Cell Risk", f"{grid_df['avg_risk'].mean():.2f}")
-
-    #                 # ── Raw Grid Data (InfluxDB)
-    #                 with st.expander("Raw Grid Data (InfluxDB)", expanded=False):
-    #                     display_cols = ["lat_bin", "lon_bin", "flight_count", "avg_risk"]
-    #                     available = [c for c in display_cols if c in grid_df.columns]
-    #                     st.dataframe(grid_df[available])
-    #             else:
-    #                 st.error("Failed to render InfluxDB grid heatmap")
-    #                             # st.success(f"Displaying {len(grid_df)} grid cells (InfluxDB)")
-    #                             # m2 = create_folium_grid_heatmap(grid_df)
-    #                             # if m2:
-    #                             #     folium_static(m2)
-    #                             # else:
-    #                             #     st.error("Failed to render InfluxDB grid heatmap")
-    #             else:
-    #                 st.error("No historical grid metrics available in InfluxDB")
-    #                     else:
-    #                         st.error("Could not connect to InfluxDB for fallback")
-    #             else:
-    #                 st.warning("No aggregates received from Kafka")
-    #         else:
-    #              st.error("Could not connect to Kafka")
     elif view_mode == "Grid Heatmap":
         st.header("Flight Density Heatmap")
         
         if data_source == "Kafka Stream":
-            # ── Create & rewind consumer (omitted for brevity) …
-            consumer = KafkaConsumer(
-                bootstrap_servers=os.environ.get('KAFKA_BOOTSTRAP','localhost:9092'),
-                auto_offset_reset='earliest',
-                enable_auto_commit=False,
-                group_id=None,
-                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
-                consumer_timeout_ms=3000
-            )
-            from kafka import TopicPartition
-            parts = consumer.partitions_for_topic("flight-aggregates")
-            if parts:
-                tps = [TopicPartition("flight-aggregates", p) for p in parts]
-                consumer.assign(tps)
-                consumer.seek_to_beginning(*tps)
-            else:
-                st.warning("Topic 'flight-aggregates' has no partitions")
-
-            with st.spinner("Fetching spatial aggregates..."):
-                messages = fetch_recent_flights(consumer, max_messages=1000)
-
-            st.write(f"🔍 Fetched {len(messages)} aggregate messages")
-            # st.write("📋 Raw aggregates preview:", messages[:5])
-
-            # ── Process into DataFrame
-            df = pd.DataFrame()
-            if messages:
-                df = pd.DataFrame([msg.get("value", msg) for msg in messages])
-                for col in ['lat_bin','lon_bin','avg_risk','flight_count']:
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
-                if 'window_start' in df.columns:
-                    df['window_start'] = pd.to_datetime(df['window_start'], errors='coerce')
-                if 'window_end' in df.columns:
-                    df['window_end'] = pd.to_datetime(df['window_end'], errors='coerce')
-
-                if not df.empty:
-                    # ── Kafka path
-                    st.success(f"Displaying {len(df)} grid cells (Kafka)")
-                    m = create_folium_grid_heatmap(df)
-                    if m:
-                        folium_static(m)
-
-                        # ── Grid Statistics (Kafka)
-                        st.subheader("Grid Statistics")
-                        c1, c2 = st.columns(2)
-                        with c1:
-                            st.metric("Active Grid Cells", len(df))
-                        with c2:
-                            st.metric("Avg Cell Risk", f"{df['avg_risk'].mean():.2f}")
-
-                        # ── Raw Grid Data (Kafka)
-                        with st.expander("Raw Grid Data", expanded=False):
-                            cols = ["lat_bin","lon_bin","flight_count","avg_risk"]
-                            avail = [c for c in cols if c in df.columns]
-                            st.dataframe(df[avail])
-                    else:
-                        st.error("Failed to render Kafka grid heatmap")
-
-                else:
-                    # ── Fallback to InfluxDB
-                    st.warning("No aggregates in Kafka – falling back to InfluxDB")
-                    influx_client = get_influx_client()
-                    if influx_client:
-                        query_api = influx_client.query_api()
-                        grid_df = query_grid_metrics(query_api, time_range=time_range)
-                        if not grid_df.empty:
-                            st.success(f"Displaying {len(grid_df)} grid cells (InfluxDB)")
-                            m2 = create_folium_grid_heatmap(grid_df)
-                            if m2:
-                                folium_static(m2)
-
-                                # ── Grid Statistics (InfluxDB)
-                                st.subheader("Grid Statistics (InfluxDB)")
-                                c1, c2 = st.columns(2)
-                                with c1:
-                                    st.metric("Active Grid Cells", len(grid_df))
-                                with c2:
-                                    st.metric("Avg Cell Risk", f"{grid_df['avg_risk'].mean():.2f}")
-
-                                # ── Raw Grid Data (InfluxDB)
-                                with st.expander("Raw Grid Data (InfluxDB)", expanded=False):
-                                    cols2 = ["lat_bin","lon_bin","flight_count","avg_risk"]
-                                    avail2 = [c for c in cols2 if c in grid_df.columns]
-                                    st.dataframe(grid_df[avail2])
-                            else:
-                                st.error("Failed to render InfluxDB grid heatmap")
+            # Create dedicated consumer for flight-aggregates topic
+            grid_consumer = get_kafka_consumer("flight-aggregates")
+            
+            if grid_consumer:
+                with st.spinner("Fetching grid data..."):
+                    grid_messages = fetch_recent_flights(grid_consumer, max_messages=1000)
+                
+                if grid_messages:
+                    # Convert messages to DataFrame using the specialized grid processor
+                    df = process_grid_data(grid_messages)
+                    
+                    if not df.empty:
+                        st.success(f"Displaying heatmap with {len(df)} grid cells")
+                        
+                        # Create heatmap visualization using Folium (interactive)
+                        m = create_folium_grid_heatmap(df)
+                        if m:
+                            # Make the map larger for better visibility
+                            folium_static(m, width=1000, height=600)
+                            
+                            # Display statistics
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Active Grid Cells", len(df))
+                            with col2:
+                                st.metric("Total Flights", int(df['flight_count'].sum()))
+                            with col3:
+                                if 'avg_risk' in df.columns:
+                                    st.metric("Average Risk", f"{df['avg_risk'].mean():.2f}")
+                            
+                            # Interactive data visualization
+                            st.subheader("Interactive Grid Data")
+                            
+                            # Create tabs for different visualizations - removing 3D view
+                            grid_tabs = st.tabs(["Scatter Plot", "Data Table"])
+                            
+                            with grid_tabs[0]:
+                                # Create interactive scatter plot
+                                fig = px.scatter(
+                                    df, 
+                                    x="longitude", 
+                                    y="latitude", 
+                                    size="flight_count",
+                                    color="avg_risk",
+                                    hover_name="flight_count",
+                                    size_max=25,
+                                    color_continuous_scale="Viridis",
+                                    title="Flight Density by Grid Cell"
+                                )
+                                
+                                # Update layout for better visibility
+                                fig.update_layout(
+                                    height=500,
+                                    xaxis_title="Longitude",
+                                    yaxis_title="Latitude",
+                                    coloraxis_colorbar=dict(title="Risk Score")
+                                )
+                                
+                                # Display the plot
+                                st.plotly_chart(fig, use_container_width=True)
+                            
+                            with grid_tabs[1]:
+                                # Create interactive data table with filters
+                                st.write("Filter and explore grid cell data:")
+                                
+                                # Add filters
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    min_flights = st.slider("Minimum Flights", 
+                                                          min_value=int(df['flight_count'].min()), 
+                                                          max_value=int(df['flight_count'].max()),
+                                                          value=int(df['flight_count'].min()))
+                                
+                                with col2:
+                                    if 'avg_risk' in df.columns:
+                                        min_risk = st.slider("Minimum Risk", 
+                                                           min_value=float(df['avg_risk'].min()), 
+                                                           max_value=float(df['avg_risk'].max()),
+                                                           value=float(df['avg_risk'].min()))
+                                
+                                # Apply filters
+                                filtered_df = df[df['flight_count'] >= min_flights]
+                                if 'avg_risk' in df.columns:
+                                    filtered_df = filtered_df[filtered_df['avg_risk'] >= min_risk]
+                                
+                                # Show filtered data
+                                st.dataframe(
+                                    filtered_df[['lat_bin', 'lon_bin', 'latitude', 'longitude', 'flight_count', 'avg_risk']]
+                                    .sort_values('flight_count', ascending=False),
+                                    height=400
+                                )
+                                
+                                # Download button
+                                csv = filtered_df.to_csv(index=False)
+                                st.download_button(
+                                    label="Download Data as CSV",
+                                    data=csv,
+                                    file_name="grid_data.csv",
+                                    mime="text/csv"
+                                )
                         else:
-                            st.error("No historical grid metrics available in InfluxDB")
+                            st.error("Failed to create heatmap visualization")
+                            
+                            # Try a simple scatter plot as fallback
+                            st.write("Falling back to simple scatter plot visualization:")
+                            fig = px.scatter(
+                                df, 
+                                x="longitude", 
+                                y="latitude", 
+                                size="flight_count",
+                                color="avg_risk",
+                                hover_name="flight_count",
+                                size_max=25,
+                                color_continuous_scale="Viridis",
+                                title="Flight Density by Grid Cell"
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
                     else:
-                        st.error("Could not connect to InfluxDB for fallback")
+                        st.warning("No valid grid data received from Kafka")
+                else:
+                    st.warning("No grid data received from Kafka")
             else:
-                st.warning("No aggregates received from Kafka")
+                st.error("Could not connect to Kafka")
         
         else:  # InfluxDB Historical
             influx_client = get_influx_client()
             if influx_client:
                 query_api = influx_client.query_api()
                 
-                with st.spinner("Querying grid metrics..."):
+                with st.spinner("Querying historical grid data..."):
                     grid_df = query_grid_metrics(query_api, time_range=time_range)
                 
                 if not grid_df.empty:
-                    st.success(f"Displaying {len(grid_df)} grid cells")
+                    st.success(f"Displaying historical heatmap with {len(grid_df)} grid cells")
                     
-                    # Create heatmap
-                    grid_map = create_grid_heatmap(grid_df)
-                    if grid_map:
-                        try:
-                            st.pydeck_chart(grid_map)
-                        except Exception as e:
-                            st.error(f"Error displaying heatmap: {e}")
-                            st.warning("Falling back to basic heatmap display...")
+                    # Create visualization using Folium (interactive)
+                    m = create_folium_grid_heatmap(grid_df)
+                    if m:
+                        # Make the map larger for better visibility
+                        folium_static(m, width=1000, height=600)
                         
-                        # Try Folium as a fallback
-                        m = create_folium_grid_heatmap(grid_df)
-                        if m:
-                            folium_static(m)
-                        else:
-                            # Fallback to a simple heatmap using Matplotlib
-                            create_matplotlib_heatmap(grid_df)
-                        
-                    # Display aggregated data over time
-                    st.subheader("Grid Cell Occupancy Over Time")
+                        # Display statistics
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Active Grid Cells", len(grid_df))
+                        with col2:
+                            st.metric("Total Flights", int(grid_df['flight_count'].sum()))
+                        with col3:
+                            if 'avg_risk' in grid_df.columns:
+                                st.metric("Average Risk", f"{grid_df['avg_risk'].mean():.2f}")
                     
-                    # Group by time and get total counts
-                    if "_time" in grid_df.columns and "flight_count" in grid_df.columns:
-                        time_series = grid_df.groupby(pd.Grouper(key="_time", freq="1min")).agg({
-                            "flight_count": "sum",
-                            "avg_risk": "mean"
-                        }).reset_index()
+                    # Interactive data visualization
+                    st.subheader("Interactive Grid Data")
+                    
+                    # Create tabs for different visualizations - removing 3D view
+                    grid_tabs = st.tabs(["Scatter Plot", "Data Table"])
+                    
+                    with grid_tabs[0]:
+                        # Create interactive scatter plot
+                        fig = px.scatter(
+                            grid_df, 
+                            x="longitude", 
+                            y="latitude", 
+                            size="flight_count",
+                            color="avg_risk",
+                            hover_name="flight_count",
+                            size_max=25,
+                            color_continuous_scale="Viridis",
+                            title="Flight Density by Grid Cell"
+                        )
                         
-                        st.line_chart(time_series.set_index("_time")["flight_count"])
+                        # Update layout for better visibility
+                        fig.update_layout(
+                            height=500,
+                            xaxis_title="Longitude",
+                            yaxis_title="Latitude",
+                            coloraxis_colorbar=dict(title="Risk Score")
+                        )
+                        
+                        # Display the plot
+                        st.plotly_chart(fig, use_container_width=True)
+                    
+                    with grid_tabs[1]:
+                        # Create interactive data table with filters
+                        st.write("Filter and explore grid cell data:")
+                        
+                        # Add filters
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            min_flights = st.slider("Minimum Flights", 
+                                                  min_value=int(grid_df['flight_count'].min()), 
+                                                  max_value=int(grid_df['flight_count'].max()),
+                                                  value=int(grid_df['flight_count'].min()))
+                        
+                        with col2:
+                            if 'avg_risk' in grid_df.columns:
+                                min_risk = st.slider("Minimum Risk", 
+                                                   min_value=float(grid_df['avg_risk'].min()), 
+                                                   max_value=float(grid_df['avg_risk'].max()),
+                                                   value=float(grid_df['avg_risk'].min()))
+                        
+                        # Apply filters
+                        filtered_df = grid_df[grid_df['flight_count'] >= min_flights]
+                        if 'avg_risk' in grid_df.columns:
+                            filtered_df = filtered_df[filtered_df['avg_risk'] >= min_risk]
+                        
+                        # Show filtered data
+                        st.dataframe(
+                            filtered_df[['lat_bin', 'lon_bin', 'latitude', 'longitude', 'flight_count', 'avg_risk']]
+                            .sort_values('flight_count', ascending=False),
+                            height=400
+                        )
+                        
+                        # Download button
+                        csv = filtered_df.to_csv(index=False)
+                        st.download_button(
+                            label="Download Data as CSV",
+                            data=csv,
+                            file_name="historical_grid_data.csv",
+                            mime="text/csv"
+                        )
                 else:
-                    st.warning("No historical grid data available in the selected time range")
+                    st.warning("No historical grid data available")
             else:
                 st.error("Could not connect to InfluxDB")
     
