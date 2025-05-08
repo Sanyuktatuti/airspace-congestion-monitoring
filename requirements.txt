@@ -21,6 +21,10 @@ fastavro>=1.7.0
 # Time-series writes
 influxdb-client>=1.36.0
 
+# MongoDB for historical data
+pymongo>=4.5.0
+dnspython>=2.4.0
+
 # Dashboard 
 streamlit>=1.24.1
 plotly>=5.13.0

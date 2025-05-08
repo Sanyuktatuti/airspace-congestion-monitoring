@@ -1,6 +1,6 @@
 # Airspace Congestion Monitoring
 
-A real-time flight tracking and airspace congestion monitoring system built with Apache Kafka, Spark Structured Streaming, InfluxDB, and Streamlit.
+A real-time flight tracking and airspace congestion monitoring system built with Apache Kafka, Spark Structured Streaming, InfluxDB, MongoDB, and Streamlit.
 
 ## Why Monitor Airspace Congestion?
 
@@ -17,8 +17,8 @@ This system provides a scalable, real-time solution for monitoring airspace cong
 
 - **Data Ingestion**: Kafka/Redpanda streams flight data
 - **Processing**: Spark Structured Streaming processes real-time flight metrics
-- **Storage**: InfluxDB (time-series) and HDFS (batch storage)
-- **Visualization**: Streamlit dashboard for real-time monitoring
+- **Storage**: InfluxDB (time-series), MongoDB (historical analytics), and HDFS (batch storage)
+- **Visualization**: Streamlit dashboard for real-time monitoring and historical analysis
 
 ```
 ┌────────────┐     ┌────────────┐     ┌────────────┐     ┌────────────┐
@@ -32,18 +32,24 @@ This system provides a scalable, real-time solution for monitoring airspace cong
                          │                  │            │ InfluxDB   │
                          │                  │            │ Database   │
                          │                  │            └────────────┘
-                         │                  │                   ▲
-                         │                  v                   │
+                         │                  v                   ▲
                          │           ┌────────────┐             │
                          │           │ HDFS       │             │
                          │           │ Writer     │             │
                          │           └────────────┘             │
                          │                                      │
                          v                                      │
-                  ┌────────────┐                               │
-                  │ Streamlit  │                               │
-                  │ Dashboard  │────────────────────────────────
-                  └────────────┘
+                  ┌────────────┐     ┌────────────┐            │
+                  │ Streamlit  │     │ MongoDB    │            │
+                  │ Dashboard  │────>│ Historical │            │
+                  └────────────┘     │ Analytics  │<───────────┘
+                         ▲           └────────────┘
+                         │                 ▲
+                         │                 │
+                         │           ┌────────────┐
+                         └───────────│ Historical │
+                                     │ Data Gen   │
+                                     └────────────┘
 ```
 
 ## System Components
@@ -75,9 +81,10 @@ Processes the raw flight data in real-time, calculating metrics and performing a
 
 ### 4. Data Storage
 
-Two storage solutions for different use cases:
+Three storage solutions for different use cases:
 
 - **InfluxDB**: Time-series database for real-time metrics and dashboarding
+- **MongoDB**: Document database for historical flight data analytics
 - **HDFS**: Distributed file system for batch storage and historical analysis
 
 ### 5. Dashboard
@@ -85,12 +92,13 @@ Two storage solutions for different use cases:
 Interactive visualization of flight data:
 
 - **opensky_dashboard.py**: Streamlit-based dashboard showing maps and metrics
-- **Features**: Real-time map, grid heatmap, and flight metrics visualization with historical analytics
+- **Features**: Real-time map, grid heatmap, flight metrics visualization, and historical analytics
 
 ## Prerequisites
 
 - Python 3.9+ with pip
 - Docker for Kafka and InfluxDB
+- MongoDB (optional, for historical analytics)
 - Sufficient memory (~8GB+ recommended)
 
 ## Setup Instructions
@@ -239,6 +247,66 @@ export MAPBOX_TOKEN="pk.eyJ1IjoiZGVtby1tYXBib3giLCJhIjoiY2xvMGJuMDZ3MHI3ZjJpbnMw
 streamlit run dashboard/opensky_dashboard.py
 ```
 
+### 5. Historical Data Analytics with MongoDB (Optional)
+
+The system includes support for historical flight data analytics using MongoDB. This allows you to analyze patterns over time, identify congestion hotspots, and detect risk anomalies.
+
+#### Setup MongoDB
+
+```bash
+# Run the MongoDB setup script
+chmod +x scripts/setup_mongodb.sh
+./scripts/setup_mongodb.sh
+```
+
+#### Generate and Import Historical Data
+
+```bash
+# Generate a week of synthetic historical flight data
+python data/augment_historical_data.py
+
+# Import the data into MongoDB
+python data/import_to_mongodb.py --drop
+```
+
+#### Using Historical Analytics in the Dashboard
+
+1. Start the dashboard: `streamlit run dashboard/opensky_dashboard.py`
+2. In the sidebar, select "Flight Metrics" view mode
+3. Navigate to the "Historical Analytics" tab
+4. Explore the following analytics:
+   - **Flight Density Timeline**: Visualize how flight traffic changes over time
+   - **Hourly Flight Patterns**: Analyze peak hours and traffic distribution
+   - **Daily Flight Patterns**: Compare weekday vs. weekend patterns
+   - **Congestion Hotspots**: Identify areas with high flight density
+   - **Risk Anomalies**: Detect periods with abnormal risk levels
+
+The historical data spans from April 30 to May 6, 2025, with approximately 475,000 flight records.
+
+### MongoDB Integration Architecture
+
+The MongoDB integration consists of the following components:
+
+1. **Data Generation**: `augment_historical_data.py` generates realistic historical flight data
+2. **Data Import**: `import_to_mongodb.py` imports the data into MongoDB with proper indexing
+3. **Query Utilities**: `mongodb_utils.py` provides functions for querying and aggregating flight data
+4. **Dashboard Integration**: `opensky_dashboard.py` uses MongoDB for historical analytics
+
+The system uses MongoDB's aggregation framework to efficiently analyze large volumes of flight data, including:
+
+- Time-based aggregations for hourly and daily patterns
+- Geospatial queries for hotspot detection
+- Risk anomaly detection through statistical analysis
+
+MongoDB was chosen for historical analytics because of its:
+
+- Flexible document model for flight data
+- Powerful aggregation framework
+- Geospatial indexing capabilities
+- Ability to handle large volumes of data efficiently
+
+The MongoDB integration is optional - the dashboard will still work without it, falling back to file-based analytics when MongoDB is unavailable.
+
 ## Simple Step-by-Step Instructions
 
 Here's a simplified workflow to get the system running:
@@ -249,65 +317,83 @@ Here's a simplified workflow to get the system running:
    # Clone and setup
    git clone https://github.com/yourusername/airspace-congestion-monitoring.git
    cd airspace-congestion-monitoring
-   python -m venv .venv
-   source .venv/bin/activate
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
    pip install -r requirements.txt
    ```
 
-2. **Start Docker Containers**:
+2. **Start Infrastructure**:
 
    ```bash
-   # Start Kafka and InfluxDB
+   # Start Kafka and InfluxDB with Docker
    docker-compose -f kafka/docker-compose.yml up -d
    docker run -d --name influxdb -p 8086:8086 influxdb:2.7
    ```
 
-3. **Configure InfluxDB**:
+3. **Run Components**:
 
    ```bash
-   # Set up InfluxDB with organization and bucket
-   docker exec influxdb influx setup --username admin --password adminpassword --org airspace --bucket flight_metrics --force
-
-   # Create and copy the token
-   TOKEN=$(docker exec influxdb influx auth create --org airspace --all-access | grep Token | awk '{print $2}')
-   echo "Your InfluxDB token: $TOKEN"
-   ```
-
-4. **Create .env File**:
-
-   ```bash
-   # Copy example file and edit it
-   cp .env.example .env
-   # Edit .env and paste your InfluxDB token
-   ```
-
-5. **Run All Components** (in separate terminal windows):
-
-   ```bash
-   # Terminal 1: Data Producer
-   source .venv/bin/activate
-   source .env
+   # In separate terminals:
    python -m ingestion.replay_producer
-
-   # Terminal 2: Spark Processor
-   source .venv/bin/activate
-   source .env
-   rm -rf /tmp/spark-checkpoints
    python -m spark.spark_stream_processor
-
-   # Terminal 3: InfluxDB Writer
-   source .venv/bin/activate
-   source .env
    python -m storage.influx_writer
-
-   # Terminal 4: Dashboard
-   source .venv/bin/activate
-   source .env
    streamlit run dashboard/opensky_dashboard.py
    ```
 
-6. **View Dashboard**:
-   Open your browser to http://localhost:8501
+4. **Access the Dashboard**:
+   - Open your browser to http://localhost:8501
+
+## Historical Data Analytics with MongoDB
+
+The system includes support for historical flight data analytics using MongoDB. This allows you to analyze patterns over time, identify congestion hotspots, and detect risk anomalies.
+
+### Setup MongoDB
+
+```bash
+# Run the MongoDB setup script
+chmod +x scripts/setup_mongodb.sh
+./scripts/setup_mongodb.sh
+```
+
+This script will:
+
+- Install MongoDB if not already installed
+- Configure MongoDB for the application
+- Install the required Python packages
+- Set up environment variables
+
+### Generate and Import Historical Data
+
+```bash
+# Generate a week of synthetic historical flight data
+python data/augment_historical_data.py
+
+# Import the data into MongoDB
+python data/import_to_mongodb.py --drop
+```
+
+The historical data generator creates realistic flight patterns based on:
+
+- Time of day variations (peak hours vs. night hours)
+- Day of week patterns (weekday vs. weekend)
+- Geographic distribution with realistic flight paths
+- Risk score variations based on congestion levels
+
+### Using Historical Analytics in the Dashboard
+
+1. Start the dashboard: `streamlit run dashboard/opensky_dashboard.py`
+2. In the sidebar, select "Flight Metrics" view mode
+3. Navigate to the "Historical Analytics" tab
+4. Explore the following analytics:
+   - **Flight Density Timeline**: Visualize how flight traffic changes over time
+   - **Hourly Flight Patterns**: Analyze peak hours and traffic distribution
+   - **Daily Flight Patterns**: Compare weekday vs. weekend patterns
+   - **Congestion Hotspots**: Identify areas with high flight density
+   - **Risk Anomalies**: Detect periods with abnormal risk levels
+
+The historical data spans from April 30 to May 6, 2025, with approximately 475,000 flight records.
+
+The MongoDB integration is optional - the dashboard will still work without it, falling back to file-based analytics when MongoDB is unavailable.
 
 ## Troubleshooting
 
