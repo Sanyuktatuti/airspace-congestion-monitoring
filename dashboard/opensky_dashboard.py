@@ -215,32 +215,51 @@ def fetch_recent_flights(consumer, max_messages=1000, timeout_sec=15):
         return []
 
 def process_flight_data(messages):
-    """Convert Kafka messages to a DataFrame"""
+    """Convert Kafka flight messages to a DataFrame"""
     if not messages:
         return pd.DataFrame()
     
-    # ── flatten nested payloads (new format wraps under "value")
-    # First, fix any JSON formatting issues in messages
+    # Fix any formatting issues in the messages
     fixed_messages = []
     for msg in messages:
         if isinstance(msg, dict):
-            # Check if this is a grid message (has lat_bin, lon_bin)
-            if 'lat_bin' in msg and 'lon_bin' in msg:
-                # Ensure all fields are properly formatted
-                fixed_msg = {}
-                for k, v in msg.items():
-                    fixed_msg[k] = v
-                fixed_messages.append(fixed_msg)
+            if "payload" in msg and isinstance(msg["payload"], dict):
+                # Handle Kafka connect format
+                fixed_messages.append(msg["payload"])
+            elif "value" in msg and isinstance(msg["value"], dict):
+                # Handle Kafka REST Proxy format
+                fixed_messages.append(msg["value"])
             else:
                 # Regular flight message
-                fixed_messages.append(msg.get("value", msg))
+                fixed_messages.append(msg)
+        elif isinstance(msg, str):
+            try:
+                # Try to parse as JSON
+                parsed = json.loads(msg)
+                if "value" in parsed and isinstance(parsed["value"], dict):
+                    # Kafka REST Proxy format
+                    fixed_messages.append(parsed["value"])
+                else:
+                    # Regular flight message
+                    fixed_messages.append(parsed)
+            except json.JSONDecodeError:
+                # Invalid JSON, skip
+                continue
     
     # Create DataFrame from fixed messages
     df = pd.DataFrame(fixed_messages)
     
     # ── convert fetch_time (ms) into datetime, coercing bad values
     if "fetch_time" in df.columns:
+        # Check for zero or very small timestamps (likely errors)
+        current_time_ms = int(time.time() * 1000)
+        df["fetch_time"] = df["fetch_time"].apply(
+            lambda x: current_time_ms if pd.isna(x) or x < 946684800000 else x  # timestamps before 2000-01-01 are considered invalid
+        )
         df["fetch_time"] = pd.to_datetime(df["fetch_time"], unit="ms", errors="coerce")
+        
+        # Replace NaT values with current time
+        df["fetch_time"] = df["fetch_time"].fillna(pd.Timestamp.now())
     
     # ── Clean numeric columns & replace nulls with zero
     for col in ['longitude', 'latitude', 'baro_altitude', 'velocity', 'vertical_rate', 
@@ -308,31 +327,30 @@ def create_flight_map(df, risk_column=None):
     df['color'] = df[color_by].apply(get_color)
     
     flight_layer = pdk.Layer(
-        "ScatterplotLayer",
-        data=df,
-        get_position=["longitude", "latitude"],
-        get_fill_color="color",
-        get_radius=3000,
-        pickable=True,
-        opacity=0.8,
-        stroked=True,
-        filled=True,
-        radius_scale=6,
-        radius_min_pixels=5,
-        radius_max_pixels=100,
-        line_width_min_pixels=1
-    )
-    
+            "ScatterplotLayer",
+            data=df,
+            get_position=["longitude", "latitude"],
+            get_fill_color="color",
+            get_radius=3000,
+            pickable=True,
+            opacity=0.8,
+            stroked=True,
+            filled=True,
+            radius_scale=6,
+            radius_min_pixels=5,
+            radius_max_pixels=100,
+            line_width_min_pixels=1
+            )
     view_state = pdk.ViewState(
-        latitude=df["latitude"].mean(),
-        longitude=df["longitude"].mean(),
-        zoom=4,
-        pitch=0
-    )
-    
+                latitude=df["latitude"].mean(),
+                longitude=df["longitude"].mean(),
+                zoom=4,
+                pitch=0
+            )
+
     deck = pdk.Deck(
         map_style="light",
-        initial_view_state=view_state,
+            initial_view_state=view_state,
         layers=[flight_layer],
         tooltip={
             "html": """
@@ -1145,8 +1163,8 @@ def main():
     if auto_refresh:
         refresh_interval = st.sidebar.slider("Refresh interval (seconds)", 
                                             min_value=5, 
-                                            max_value=60, 
-                                            value=10)
+                                            max_value=120, 
+                                            value=60)
     
     view_mode = st.sidebar.radio(
         "View Mode",

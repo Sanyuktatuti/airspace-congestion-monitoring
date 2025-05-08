@@ -129,15 +129,7 @@ def enrich_state(state, metadata, fetch_time=None):
     if record['on_ground']:
         record['on_ground'] = bool(record['on_ground'])
     
-    # # stamp with current time in ms
-    # record['fetch_time'] = fetch_time if fetch_time else int(time.time() * 1000)
-    
-    # # attach any static metadata (or empty dict)
-    # meta = metadata.get(record['icao24']) if record['icao24'] else None
-    # record['aircraft'] = meta if meta else {}
-    
-    # return record
-        # stamp with current time in ms
+    # stamp with current time in ms
     record['fetch_time'] = fetch_time if fetch_time else int(time.time() * 1000)
     
     # attach any static metadata (or empty dict)
@@ -148,10 +140,14 @@ def enrich_state(state, metadata, fetch_time=None):
     for field in [
         'time_position', 'last_contact', 'longitude', 'latitude',
         'baro_altitude', 'velocity', 'true_track',
-        'vertical_rate', 'geo_altitude', 'fetch_time'
+        'vertical_rate', 'geo_altitude'
     ]:
         if record.get(field) is None:
             record[field] = 0
+    
+    # Always ensure fetch_time has a valid timestamp
+    if record.get('fetch_time') is None or record.get('fetch_time') == 0:
+        record['fetch_time'] = int(time.time() * 1000)  # Current time in milliseconds
     
     # ── Fill missing string fields with empty string
     for field in ['icao24', 'callsign', 'origin_country', 'squawk']:
@@ -172,7 +168,7 @@ def main():
     METADATA_CSV      = 'data/aircraft_metadata.csv'
     KAFKA_BOOTSTRAP   = os.environ.get('KAFKA_BOOTSTRAP', 'localhost:9092')
     TOPIC             = os.environ.get('KAFKA_TOPIC', 'flight-stream')
-    POLL_INTERVAL_SEC = int(os.environ.get('POLL_INTERVAL', 10))  # seconds
+    POLL_INTERVAL_SEC = int(os.environ.get('POLL_INTERVAL', 60))  # seconds, changed from 10 to 60
     OPENSKY_USERNAME  = os.environ.get('OPENSKY_USERNAME')
     OPENSKY_PASSWORD  = os.environ.get('OPENSKY_PASSWORD')
     
