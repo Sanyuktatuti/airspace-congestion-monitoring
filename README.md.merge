@@ -21,6 +21,7 @@ This system provides a scalable, real-time solution for monitoring airspace cong
 - **Visualization**: Streamlit dashboard for real-time monitoring and historical analysis
 
 ```
+```
 ┌────────────┐     ┌────────────┐     ┌────────────┐     ┌────────────┐
 │ Data       │     │ Kafka      │     │ Spark      │     │ InfluxDB   │
 │ Producer   │────>│ (Redpanda) │────>│ Streaming  │────>│ Writer     │
@@ -32,24 +33,35 @@ This system provides a scalable, real-time solution for monitoring airspace cong
                          │                  │            │ InfluxDB   │
                          │                  │            │ Database   │
                          │                  │            └────────────┘
-                         │                  v                   ▲
+                         │                  v                   │
                          │           ┌────────────┐             │
                          │           │ HDFS       │             │
                          │           │ Writer     │             │
                          │           └────────────┘             │
                          │                                      │
-                         v                                      │
-                  ┌────────────┐     ┌────────────┐            │
-                  │ Streamlit  │     │ MongoDB    │            │
-                  │ Dashboard  │────>│ Historical │            │
-                  └────────────┘     │ Analytics  │<───────────┘
-                         ▲           └────────────┘
-                         │                 ▲
-                         │                 │
-                         │           ┌────────────┐
-                         └───────────│ Historical │
-                                     │ Data Gen   │
-                                     └────────────┘
+                         v                                      v
+                  ┌────────────┐                        ┌────────────┐
+                  │ Streamlit  │◄───────────────────────┤ Real-time  │
+                  │ Dashboard  │                        │ Analytics  │
+                  └────────────┘                        └────────────┘
+                         │
+                         ├─────────────────┐
+                         v                 v
+                  ┌────────────┐    ┌────────────┐
+                  │ Historical │    │ MongoDB    │
+                  │ Data Gen   │───>│ Database   │
+                  └────────────┘    └────────────┘
+                                         │
+                                         v
+                                    ┌────────────┐
+                                    │ Historical │
+                                    │ Analytics  │────────────────────┐
+                                    └────────────┘                    │
+                                                                      v
+                                                               ┌────────────┐
+                                                               │ Dashboard  │
+                                                               │ View       │
+                                                               └────────────┘ ```
 ```
 
 ## System Components
@@ -305,6 +317,7 @@ MongoDB was chosen for historical analytics because of its:
 
 The MongoDB integration is optional - the dashboard will still work without it, falling back to file-based analytics when MongoDB is unavailable.
 
+<<<<<<< HEAD
 ## Simple Step-by-Step Instructions
 
 Here's a simplified workflow to get the system running:
@@ -409,6 +422,8 @@ The historical data spans from April 30 to May 6, 2025, with approximately 475,0
 
 The MongoDB integration is optional - the dashboard will still work without it, falling back to file-based analytics when MongoDB is unavailable.
 
+=======
+>>>>>>> cb71a8315 (Update architecture diagram to better show MongoDB integration)
 ## Troubleshooting
 
 ### Authentication Issues
