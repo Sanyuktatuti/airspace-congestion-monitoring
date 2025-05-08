@@ -322,44 +322,40 @@ Here's a simplified workflow to get the system running:
 
 2. **Start Infrastructure** (2 Options):
 
-3. **Start and Stop Scripts:**
-   Make the script executable:
-   chmod +x scripts/stop_presentation.sh
+  1. **Start and Stop Scripts:**
+     Make the script executable:
+     chmod +x scripts/stop_presentation.sh
 
-   Run the script:
-   ./scripts/stop_presentation.sh
+     Run the script:
+     ./scripts/stop_presentation.sh
 
-   Make the script executable:
-   chmod +x scripts/start_presentation.sh
+     Make the script executable:
+     chmod +x scripts/start_presentation.sh
 
-   Run the script:
-   ./scripts/start_presentation.sh
+     Run the script:
+     ./scripts/start_presentation.sh
 
-   ##OR
+     ##OR
 
-4. **Launch each services individually:**
+   2. **Launch each services individually:**
 
    **Start Infrastructure**:
+   ```bash
+   # Start Kafka and InfluxDB with Docker
+   docker-compose -f kafka/docker-compose.yml up -d
+   docker run -d --name influxdb -p 8086:8086 influxdb:2.7
+   ```
+   **Run Components**:
 
-```bash
-# Start Kafka and InfluxDB with Docker
-docker-compose -f kafka/docker-compose.yml up -d
-docker run -d --name influxdb -p 8086:8086 influxdb:2.7
-```
-
-**Run Components**:
-
-```bash
-# In separate terminals:
-python -m ingestion.replay_producer
-python -m spark.spark_stream_processor
-python -m storage.influx_writer
-streamlit run dashboard/opensky_dashboard.py
-```
-
-**Access the Dashboard**:
-
-- Open your browser to http://localhost:8501
+   ```bash
+   # In separate terminals:
+   python -m ingestion.replay_producer
+   python -m spark.spark_stream_processor
+   python -m storage.influx_writer
+   streamlit run dashboard/opensky_dashboard.py
+   ```
+   **Access the Dashboard**:
+   - Open your browser to http://localhost:8501
 
 ## Historical Data Analytics with MongoDB
 
