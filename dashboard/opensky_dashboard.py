@@ -18,6 +18,11 @@ from influxdb_client import InfluxDBClient
 from influxdb_client.client.query_api import QueryApi
 import matplotlib.pyplot as plt
 
+# Add folium imports
+import folium
+from streamlit_folium import folium_static
+from folium.plugins import HeatMap, MarkerCluster
+
 # Try to load environment variables from .env file
 try:
     from dotenv import load_dotenv
@@ -355,10 +360,204 @@ def display_metrics_charts(metrics_df):
             st.subheader(f"{metric.replace('_', ' ').title()}")
             st.line_chart(numeric_df[metric])
 
+# Create a Folium-based map function
+def create_folium_flight_map(df, risk_column=None):
+    """Create a Folium map visualization of flights"""
+    if df.empty:
+        return None
+    
+    try:
+        # Determine center of the map
+        center_lat = df["latitude"].mean()
+        center_lon = df["longitude"].mean()
+        
+        # Create the map
+        m = folium.Map(location=[center_lat, center_lon], zoom_start=5)
+        
+        # Create marker cluster for better performance with many points
+        marker_cluster = MarkerCluster().add_to(m)
+        
+        # Determine color field
+        if risk_column in df.columns:
+            color_by = risk_column
+        elif 'velocity' in df.columns:
+            color_by = 'velocity'
+        else:
+            df['default_color'] = 0.5
+            color_by = 'default_color'
+        
+        # Add markers for each flight
+        for _, row in df.iterrows():
+            if pd.isna(row['latitude']) or pd.isna(row['longitude']):
+                continue
+                
+            # Create popup text
+            popup_text = f"ICAO24: {row.get('icao24', 'Unknown')}<br>"
+            if 'callsign' in row and not pd.isna(row['callsign']):
+                popup_text += f"Callsign: {row['callsign']}<br>"
+            if 'origin_country' in row and not pd.isna(row['origin_country']):
+                popup_text += f"Country: {row['origin_country']}<br>"
+            if 'baro_altitude' in row and not pd.isna(row['baro_altitude']):
+                popup_text += f"Altitude: {row['baro_altitude']} m<br>"
+            if 'velocity' in row and not pd.isna(row['velocity']):
+                popup_text += f"Speed: {row['velocity']} m/s<br>"
+            if 'vertical_rate' in row and not pd.isna(row['vertical_rate']):
+                popup_text += f"Vertical Rate: {row['vertical_rate']} m/s<br>"
+            if risk_column in row and not pd.isna(row[risk_column]):
+                popup_text += f"Risk: {row[risk_column]:.2f}"
+                
+            # Set color based on value
+            if color_by in row and not pd.isna(row[color_by]):
+                value = row[color_by]
+                if color_by == 'risk_score' or color_by == 'avg_risk':
+                    # Red for high risk
+                    color = 'red' if value > 1.0 else ('orange' if value > 0.5 else 'green')
+                else:
+                    # Blue shades for speed
+                    color = 'blue'
+            else:
+                color = 'blue'
+                
+            # Add marker to cluster
+            folium.Marker(
+                location=[row['latitude'], row['longitude']],
+                popup=folium.Popup(popup_text, max_width=300),
+                icon=folium.Icon(icon="plane", prefix="fa", color=color),
+            ).add_to(marker_cluster)
+        
+        return m
+    except Exception as e:
+        st.error(f"Error creating Folium map: {e}")
+        return None
+
+def create_folium_grid_heatmap(df):
+    """Create a Folium heatmap of flight density by grid cell"""
+    if df.empty:
+        print("Warning: Empty dataframe passed to create_folium_grid_heatmap")
+        return None
+    
+    try:
+        # Convert lat/lon bins to coordinates if needed
+        if 'lat_bin' in df.columns and 'lon_bin' in df.columns and 'latitude' not in df.columns:
+            # Create center points from grid cells
+            df['latitude'] = (df['lat_bin'] + 0.5) - 90
+            df['longitude'] = (df['lon_bin'] + 0.5) - 180
+        
+        # Filter out NaN values in coordinates
+        df = df.dropna(subset=['latitude', 'longitude'])
+        
+        if df.empty:
+            print("Warning: No valid coordinates after filtering NaNs")
+            return None
+        
+        # Check for flight count column
+        if 'flight_count' in df.columns:
+            # Use flight count as weight
+            heat_data = [[row.latitude, row.longitude, row.flight_count] for i, row in df.iterrows() 
+                        if not pd.isna(row.latitude) and not pd.isna(row.longitude) and not pd.isna(row.flight_count)]
+        else:
+            # No weight, just use coordinates
+            heat_data = [[row.latitude, row.longitude] for i, row in df.iterrows()
+                        if not pd.isna(row.latitude) and not pd.isna(row.longitude)]
+        
+        if not heat_data:
+            print("Warning: No valid data points for heatmap")
+            return None
+            
+        # Create basic map centered on the data
+        center_lat = df["latitude"].mean()
+        center_lon = df["longitude"].mean()
+        
+        # Fallback to default center if NaN
+        if pd.isna(center_lat) or pd.isna(center_lon):
+            center_lat, center_lon = 0, 0
+            
+        m = folium.Map(location=[center_lat, center_lon], zoom_start=2)
+        
+        # Add the heatmap
+        HeatMap(heat_data).add_to(m)
+        
+        return m
+    except Exception as e:
+        st.error(f"Error creating Folium heatmap: {e}")
+        print(f"Folium heatmap error details: {str(e)}")
+        return None
+
+def create_matplotlib_heatmap(df):
+    """Create a Matplotlib heatmap of flight density by grid cell"""
+    if df.empty:
+        st.warning("No data available for heatmap visualization")
+        return
+    
+    # Check if we have the necessary columns
+    if 'lat_bin' not in df.columns or 'lon_bin' not in df.columns:
+        if 'latitude' in df.columns and 'longitude' in df.columns:
+            # Create bins from coordinates
+            df['lat_bin'] = (df['latitude'] + 90).astype(int)
+            df['lon_bin'] = (df['longitude'] + 180).astype(int)
+        else:
+            st.error("Missing coordinate data for heatmap")
+            return
+    
+    # Check if we have flight count
+    if 'flight_count' not in df.columns:
+        # Count occurrences in each grid cell
+        flight_counts = df.groupby(['lat_bin', 'lon_bin']).size().reset_index(name='flight_count')
+        df = flight_counts
+    
+    try:
+        # Create pivot table for heatmap
+        pivoted = df.pivot_table(
+            index='lat_bin', 
+            columns='lon_bin', 
+            values='flight_count',
+            aggfunc='max',
+            fill_value=0
+        )
+        
+        # Create the plot
+        fig, ax = plt.subplots(figsize=(10, 6))
+        im = ax.imshow(pivoted, cmap='viridis', interpolation='none', aspect='auto')
+        plt.colorbar(im, ax=ax, label='Flight Count')
+        
+        # Add labels and title
+        ax.set_xlabel('Longitude Bin')
+        ax.set_ylabel('Latitude Bin')
+        ax.set_title('Flight Density Heatmap')
+        
+        # Display in Streamlit
+        st.pyplot(fig)
+        
+    except Exception as e:
+        st.error(f"Error creating Matplotlib heatmap: {e}")
+        print(f"Matplotlib heatmap error details: {str(e)}")
+        
+        # Last resort: display the raw data
+        st.write("Raw Grid Data:")
+        display_cols = ["lat_bin", "lon_bin", "flight_count"]
+        available_cols = [c for c in display_cols if c in df.columns]
+        st.dataframe(df[available_cols])
+
 def main():
     """Main dashboard application"""
     # Sidebar for controls
     st.sidebar.title("✈️ Airspace Congestion Monitor")
+    
+    # Add refresh controls
+    refresh_col1, refresh_col2 = st.sidebar.columns([1, 1])
+    
+    with refresh_col1:
+        if st.button("🔄 Refresh Now"):
+            st.rerun()
+    
+    with refresh_col2:
+        auto_refresh = st.sidebar.checkbox("Auto-refresh", value=False)
+    
+    if auto_refresh:
+        refresh_interval = st.sidebar.slider("Refresh interval (seconds)", 
+                                            min_value=5, 
+                                            max_value=60, 
+                                            value=10)
     
     view_mode = st.sidebar.radio(
         "View Mode",
@@ -369,6 +568,12 @@ def main():
     data_source = st.sidebar.radio(
         "Data Source",
         ["Kafka Stream", "InfluxDB Historical"]
+    )
+    
+    # Map provider selection
+    map_provider = st.sidebar.radio(
+        "Map Provider",
+        ["Folium Map", "PyDeck (Original)"]
     )
     
     # Time range for historical data
@@ -409,9 +614,17 @@ def main():
                         if 'risk_score' in df.columns:
                             df = df[df['risk_score'] <= max_risk]
                         
-                        # Try PyDeck first, fall back to basic map if it fails
-                        if not create_flight_map(df, risk_column='risk_score'):
-                            display_basic_map(df)
+                        # Select map provider
+                        if map_provider == "Folium Map":
+                            m = create_folium_flight_map(df, risk_column='risk_score')
+                            if m:
+                                folium_static(m)
+                            else:
+                                display_basic_map(df)
+                        else:
+                            # Try PyDeck first, fall back to basic map if it fails
+                            if not create_flight_map(df, risk_column='risk_score'):
+                                display_basic_map(df)
                         
                         # Display stats
                         st.subheader("Flight Statistics")
@@ -462,9 +675,17 @@ def main():
                     if 'avg_risk' in metrics_df.columns:
                         metrics_df = metrics_df[metrics_df['avg_risk'] <= max_risk]
                     
-                    # Try PyDeck first, fall back to basic map if it fails
-                    if not create_flight_map(metrics_df, risk_column='avg_risk'):
-                        display_basic_map(metrics_df)
+                    # Select map provider
+                    if map_provider == "Folium Map":
+                        m = create_folium_flight_map(metrics_df, risk_column='avg_risk')
+                        if m:
+                            folium_static(m)
+                        else:
+                            display_basic_map(metrics_df)
+                    else:
+                        # Try PyDeck first, fall back to basic map if it fails
+                        if not create_flight_map(metrics_df, risk_column='avg_risk'):
+                            display_basic_map(metrics_df)
                     
                     # Display metrics
                     display_metrics_charts(metrics_df)
@@ -489,31 +710,32 @@ def main():
                     if not df.empty:
                         st.success(f"Displaying {len(df)} grid cells")
                         
-                        # Create heatmap
-                        grid_map = create_grid_heatmap(df)
-                        if grid_map:
-                            try:
-                                st.pydeck_chart(grid_map)
-                            except Exception as e:
-                                st.error(f"Error displaying heatmap: {e}")
-                                st.warning("Falling back to basic heatmap display...")
-                                
+                        # Create heatmap based on provider choice
+                        if map_provider == "Folium Map":
+                            m = create_folium_grid_heatmap(df)
+                            if m:
+                                folium_static(m)
+                            else:
+                                st.error("Failed to create Folium heatmap")
                                 # Fallback to a simple heatmap using Matplotlib
-                                if 'lat_bin' in df.columns and 'lon_bin' in df.columns and 'flight_count' in df.columns:
-                                    fig, ax = plt.subplots(figsize=(10, 6))
-                                    pivoted = df.pivot_table(
-                                        index='lat_bin', 
-                                        columns='lon_bin', 
-                                        values='flight_count',
-                                        aggfunc='max',
-                                        fill_value=0
-                                    )
-                                    im = ax.imshow(pivoted, cmap='viridis', interpolation='none', aspect='auto')
-                                    plt.colorbar(im, ax=ax, label='Flight Count')
-                                    ax.set_xlabel('Longitude Bin')
-                                    ax.set_ylabel('Latitude Bin')
-                                    ax.set_title('Flight Density Heatmap')
-                                    st.pyplot(fig)
+                                create_matplotlib_heatmap(df)
+                        else:
+                            # Create heatmap
+                            grid_map = create_grid_heatmap(df)
+                            if grid_map:
+                                try:
+                                    st.pydeck_chart(grid_map)
+                                except Exception as e:
+                                    st.error(f"Error displaying heatmap: {e}")
+                                    st.warning("Falling back to basic heatmap display...")
+                                
+                                # Try Folium as a fallback
+                                m = create_folium_grid_heatmap(df)
+                                if m:
+                                    folium_static(m)
+                                else:
+                                    # Fallback to a simple heatmap using Matplotlib
+                                    create_matplotlib_heatmap(df)
                         
                         # Display stats
                         st.subheader("Grid Statistics")
@@ -557,24 +779,15 @@ def main():
                         except Exception as e:
                             st.error(f"Error displaying heatmap: {e}")
                             st.warning("Falling back to basic heatmap display...")
-                            
+                        
+                        # Try Folium as a fallback
+                        m = create_folium_grid_heatmap(grid_df)
+                        if m:
+                            folium_static(m)
+                        else:
                             # Fallback to a simple heatmap using Matplotlib
-                            if 'lat_bin' in grid_df.columns and 'lon_bin' in grid_df.columns and 'flight_count' in grid_df.columns:
-                                fig, ax = plt.subplots(figsize=(10, 6))
-                                pivoted = grid_df.pivot_table(
-                                    index='lat_bin', 
-                                    columns='lon_bin', 
-                                    values='flight_count',
-                                    aggfunc='max',
-                                    fill_value=0
-                                )
-                                im = ax.imshow(pivoted, cmap='viridis', interpolation='none', aspect='auto')
-                                plt.colorbar(im, ax=ax, label='Flight Count')
-                                ax.set_xlabel('Longitude Bin')
-                                ax.set_ylabel('Latitude Bin')
-                                ax.set_title('Flight Density Heatmap')
-                                st.pyplot(fig)
-                    
+                            create_matplotlib_heatmap(grid_df)
+                        
                     # Display aggregated data over time
                     st.subheader("Grid Cell Occupancy Over Time")
                     
@@ -647,9 +860,27 @@ def main():
             st.error("Could not connect to InfluxDB")
     
     # Auto-refresh logic
-    if data_source == "Kafka Stream":
-        time.sleep(UPDATE_INTERVAL)
-        st.rerun()
+    if data_source == "Kafka Stream" and auto_refresh:
+        # Initialize session state for refresh timing
+        if 'last_refresh' not in st.session_state:
+            st.session_state.last_refresh = time.time()
+            
+        # Calculate time since last refresh
+        time_since_refresh = time.time() - st.session_state.last_refresh
+        
+        # Check if it's time to refresh
+        if time_since_refresh >= refresh_interval:
+            st.session_state.last_refresh = time.time()
+            st.rerun()
+        else:
+            # Show a small progress bar at the bottom of the page
+            st.sidebar.caption("Next auto-refresh in:")
+            progress = st.sidebar.progress(time_since_refresh / refresh_interval)
+            
+            # Update the time display without full page refresh
+            if st.sidebar.button("Cancel auto-refresh"):
+                st.session_state.auto_refresh = False
+                st.rerun()
 
 if __name__ == "__main__":
     main()
