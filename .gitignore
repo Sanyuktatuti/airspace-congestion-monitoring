@@ -1,5 +1,7 @@
 temp/*
+# Include data files that are tracked by Git LFS
 data/*
+!data/*.jsonl
 spark/__pycache__
 local_output/*
 .DS_Store
