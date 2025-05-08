@@ -8,6 +8,7 @@ pyspark>=3.5.0
 pyarrow>=7.0.0
 pandas>=1.5.0
 numpy>=1.23.0
+scipy>=1.11.0
 
 # Geospatial analytics
 geopandas>=0.12.2
