@@ -23,7 +23,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 # Import anomaly detection functionality
-from anomaly_detection import analyze_flight_anomalies, get_anomaly_summary, classify_anomaly_severity, get_anomaly_timestamps
+from spark.anomaly_detection import analyze_flight_anomalies, get_anomaly_summary, classify_anomaly_severity, get_anomaly_timestamps
 
 # Add folium imports
 import folium
@@ -32,7 +32,7 @@ from folium.plugins import HeatMap, MarkerCluster, Fullscreen
 
 # Try to import MongoDB utilities (optional)
 try:
-    from mongodb_utils import (
+    from spark.mongodb_utils import (
         get_mongodb_client, get_date_range, query_flights_by_timerange,
         get_hourly_patterns, get_daily_patterns, get_congestion_hotspots,
         get_flight_density_timeline, get_anomaly_windows, get_top_flights_by_risk
@@ -69,7 +69,8 @@ UPDATE_INTERVAL = 3  # seconds
 MAX_FLIGHTS = 5000  # maximum flights to display
 
 # Add the current directory to the Python path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(project_root)
 
 # Helper functions
 @st.cache_resource
@@ -402,11 +403,26 @@ def create_folium_flight_map(df, risk_column=None):
         center_lat = df["latitude"].mean()
         center_lon = df["longitude"].mean()
         
-        # Create the map
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=5)
+        # Create the map with a more attractive style
+        m = folium.Map(
+            location=[center_lat, center_lon], 
+            zoom_start=5,
+            tiles='CartoDB positron',  # More modern, clean style
+            width='100%',              # Use full width
+            height='700px'             # Increase height
+        )
         
-        # Create marker cluster for better performance with many points
-        marker_cluster = MarkerCluster().add_to(m)
+        # Add fullscreen control
+        Fullscreen(position='topright').add_to(m)
+        
+        # Create marker cluster with custom options for better visualization
+        marker_cluster = MarkerCluster(
+            options={
+                'maxClusterRadius': 40,       # Smaller clusters for better detail
+                'disableClusteringAtZoom': 9,  # Show individual planes at higher zoom
+                'spiderfyOnMaxZoom': True     # Spread markers when clicked
+            }
+        ).add_to(m)
         
         # Determine color field
         if risk_column in df.columns:
@@ -417,48 +433,90 @@ def create_folium_flight_map(df, risk_column=None):
             df['default_color'] = 0.5
             color_by = 'default_color'
         
-        # Add markers for each flight
+        # Add markers for each flight with improved styling
         for _, row in df.iterrows():
             if pd.isna(row['latitude']) or pd.isna(row['longitude']):
                 continue
                 
-            # Create popup text
-            popup_text = f"ICAO24: {row.get('icao24', 'Unknown')}<br>"
-            if 'callsign' in row and not pd.isna(row['callsign']):
-                popup_text += f"Callsign: {row['callsign']}<br>"
-            if 'origin_country' in row and not pd.isna(row['origin_country']):
-                popup_text += f"Country: {row['origin_country']}<br>"
-            if 'airline' in row:
-                popup_text += f"Airline: {row['airline']}<br>"
+            # Create popup text with better formatting
+            popup_text = f"""
+            <div style="font-family: Arial, sans-serif; min-width: 200px; max-width: 300px;">
+                <h4 style="margin-top: 0; color: #2c3e50;">Flight {row.get('callsign', row.get('icao24', 'Unknown'))}</h4>
+                <table style="width: 100%; border-collapse: collapse;">
+                    <tr><td style="padding: 3px; border-bottom: 1px solid #eee;"><b>ICAO24:</b></td><td style="padding: 3px; border-bottom: 1px solid #eee;">{row.get('icao24', 'Unknown')}</td></tr>
+            """
+            
+            if 'callsign' in row and not pd.isna(row['callsign']) and row['callsign']:
+                popup_text += f'<tr><td style="padding: 3px; border-bottom: 1px solid #eee;"><b>Callsign:</b></td><td style="padding: 3px; border-bottom: 1px solid #eee;">{row["callsign"]}</td></tr>'
+            
+            if 'origin_country' in row and not pd.isna(row['origin_country']) and row['origin_country']:
+                popup_text += f'<tr><td style="padding: 3px; border-bottom: 1px solid #eee;"><b>Country:</b></td><td style="padding: 3px; border-bottom: 1px solid #eee;">{row["origin_country"]}</td></tr>'
+            
+            if 'airline' in row and not pd.isna(row['airline']) and row['airline'] != "No Data Available":
+                popup_text += f'<tr><td style="padding: 3px; border-bottom: 1px solid #eee;"><b>Airline:</b></td><td style="padding: 3px; border-bottom: 1px solid #eee;">{row["airline"]}</td></tr>'
+            
             if 'baro_altitude' in row and not pd.isna(row['baro_altitude']):
-                popup_text += f"Altitude: {row['baro_altitude']} m<br>"
+                popup_text += f'<tr><td style="padding: 3px; border-bottom: 1px solid #eee;"><b>Altitude:</b></td><td style="padding: 3px; border-bottom: 1px solid #eee;">{row["baro_altitude"]:.0f} m</td></tr>'
+            
             if 'velocity' in row and not pd.isna(row['velocity']):
-                popup_text += f"Speed: {row['velocity']} m/s<br>"
+                popup_text += f'<tr><td style="padding: 3px; border-bottom: 1px solid #eee;"><b>Speed:</b></td><td style="padding: 3px; border-bottom: 1px solid #eee;">{row["velocity"]:.1f} m/s</td></tr>'
+            
             if 'vertical_rate' in row and not pd.isna(row['vertical_rate']):
-                popup_text += f"Vertical Rate: {row['vertical_rate']} m/s<br>"
+                popup_text += f'<tr><td style="padding: 3px; border-bottom: 1px solid #eee;"><b>Vertical Rate:</b></td><td style="padding: 3px; border-bottom: 1px solid #eee;">{row["vertical_rate"]:.1f} m/s</td></tr>'
+            
             if risk_column in row and not pd.isna(row[risk_column]):
-                popup_text += f"Risk: {row[risk_column]:.2f}"
+                popup_text += f'<tr><td style="padding: 3px;"><b>Risk:</b></td><td style="padding: 3px;">{row[risk_column]:.2f}</td></tr>'
+            
+            popup_text += """
+                </table>
+            </div>
+            """
                 
-            # Set color based on value
+            # Set color based on value with better color scheme
             if color_by in row and not pd.isna(row[color_by]):
                 value = row[color_by]
                 if color_by == 'risk_score' or color_by == 'avg_risk':
-                    # Red for high risk
+                    # Enhanced color scheme for risk
                     if value is None or pd.isna(value):
                         color = 'blue'  # Default color for unknown risk
+                    elif value > 1.5:
+                        color = 'red'   # High risk
+                    elif value > 1.0:
+                        color = 'orange' # Medium-high risk
+                    elif value > 0.5:
+                        color = 'gold'  # Medium risk
                     else:
-                        color = 'red' if value > 1.0 else ('orange' if value > 0.5 else 'green')
+                        color = 'green' # Low risk
+                elif color_by == 'velocity':
+                    # Enhanced color scheme for velocity
+                    if value > 250:
+                        color = 'darkblue'
+                    elif value > 200:
+                        color = 'blue'
+                    elif value > 150:
+                        color = 'cadetblue'
+                    elif value > 100:
+                        color = 'lightblue'
+                    else:
+                        color = 'gray'
                 else:
-                    # Blue shades for speed
                     color = 'blue'
             else:
                 color = 'blue'
-                
-            # Add marker to cluster
+            
+            # Create custom plane icon with rotation if heading available
+            icon_options = {
+                'icon': 'plane',
+                'prefix': 'fa',
+                'color': color,
+                'iconColor': 'white'
+            }
+            
+            # Add marker to cluster with improved popup
             folium.Marker(
                 location=[row['latitude'], row['longitude']],
                 popup=folium.Popup(popup_text, max_width=300),
-                icon=folium.Icon(icon="plane", prefix="fa", color=color),
+                icon=folium.Icon(**icon_options),
             ).add_to(marker_cluster)
         
         return m
@@ -477,14 +535,16 @@ def create_folium_grid_heatmap(df):
         center_lat = df['latitude'].mean()
         center_lon = df['longitude'].mean()
         
-        # Create map with a dark theme for better contrast
+        # Create map with a dark theme for better contrast and increased size
         m = folium.Map(
             location=[center_lat, center_lon],
             zoom_start=4,
-            tiles='cartodbdark_matter'
+            tiles='cartodbdark_matter',
+            width='100%',
+            height='750px'  # Increased height
         )
 
-        # Add fullscreen control
+        # Add fullscreen control for better user experience
         Fullscreen(position='topright').add_to(m)
         
         # Prepare heatmap data - must be a list of [lat, lon, intensity]
@@ -504,12 +564,12 @@ def create_folium_grid_heatmap(df):
                 print(f"Error processing row: {e}")
                 continue
 
-        # Add heatmap layer with custom gradient - KEYS MUST BE STRINGS for Folium
+        # Add heatmap layer with enhanced gradient - KEYS MUST BE STRINGS for Folium
         HeatMap(
             data=heat_data,
             min_opacity=0.2,
             max_opacity=0.9,
-            radius=25,
+            radius=30,  # Slightly larger radius
             blur=15,
             gradient={
                 "0.2": "#1a1a1a",  # Very dark gray for low density
@@ -1230,8 +1290,10 @@ def main():
 
                     # Map rendering
                     m = create_folium_flight_map(df, risk_column='risk_score')
+                    # In the Real-time Map section of main(), replace the folium_static call:
                     if m:
-                        folium_static(m)
+                        # Make the map larger for better visibility
+                        folium_static(m, width=1200, height=700)
                     else:
                         display_basic_map(df)
 
@@ -1309,8 +1371,8 @@ def main():
                         m = create_folium_grid_heatmap(df)
                         if m:
                             # Make the map larger for better visibility
-                            folium_static(m, width=1000, height=600)
-                            
+                            folium_static(m, width=1200, height=750)
+                        
                             # Display statistics
                             col1, col2, col3 = st.columns(3)
                             with col1:
@@ -1320,7 +1382,7 @@ def main():
                             with col3:
                                 if 'avg_risk' in df.columns:
                                     st.metric("Average Risk", f"{df['avg_risk'].mean():.2f}")
-                            
+                        
                             # Interactive data visualization
                             st.subheader("Interactive Grid Data")
                             
@@ -1770,7 +1832,7 @@ def main():
                         st.write("Hotspot Map")
                         hotspot_map = create_hotspot_map(hotspots)
                         if hotspot_map:
-                            folium_static(hotspot_map, width=1000, height=600)
+                            folium_static(hotspot_map, width=1200, height=700)
                         
                         # Show data table
                         st.write("Top Congestion Hotspots")

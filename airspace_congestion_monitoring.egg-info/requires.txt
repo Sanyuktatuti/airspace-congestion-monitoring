@@ -1,0 +1,11 @@
+pandas
+numpy
+streamlit
+pydeck
+kafka-python
+influxdb-client
+matplotlib
+plotly
+folium
+streamlit-folium
+python-dotenv
