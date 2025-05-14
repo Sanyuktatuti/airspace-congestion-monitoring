@@ -161,45 +161,64 @@ def get_hourly_patterns():
         return pd.DataFrame()
     
     try:
-        # First get all flights
-        all_flights = list(collection.find())
-        if not all_flights:
+        # Use MongoDB aggregation pipeline instead of loading all data
+        pipeline = [
+            {
+                "$project": {
+                    "hour": {"$hour": "$value.fetch_time_dt"},
+                    "risk_score": 1,
+                    "value.baro_altitude": 1,
+                    "value.velocity": 1,
+                    "value.vertical_rate": 1,
+                    "value.on_ground": 1
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$hour",
+                    "flight_count": {"$sum": 1},
+                    "avg_altitude": {"$avg": "$value.baro_altitude"},
+                    "avg_velocity": {"$avg": "$value.velocity"},
+                    "avg_risk": {
+                        "$avg": {
+                            "$function": {
+                                "body": """function(velocity, vertical_rate, on_ground) {
+                                    if (on_ground) return 0;
+                                    let risk = 0;
+                                    if (velocity > 250) risk += 0.5;
+                                    if (Math.abs(vertical_rate) > 10) risk += 0.5;
+                                    return risk;
+                                }""",
+                                "args": ["$value.velocity", "$value.vertical_rate", "$value.on_ground"],
+                                "lang": "js"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "$project": {
+                    "hour_of_day": "$_id",
+                    "flight_count": 1,
+                    "avg_risk": 1,
+                    "avg_altitude": 1,
+                    "avg_velocity": 1,
+                    "_id": 0
+                }
+            },
+            {
+                "$sort": {"hour_of_day": 1}
+            }
+        ]
+        
+        # Execute aggregation
+        results = list(collection.aggregate(pipeline))
+        
+        # Convert to DataFrame
+        if not results:
             return pd.DataFrame()
-            
-        # Convert to DataFrame - extract 'value' field
-        df = pd.DataFrame([doc["value"] for doc in all_flights if "value" in doc])
         
-        # Calculate risk scores
-        df['risk_score'] = df.apply(
-            lambda row: calculate_risk_score(
-                row.get('velocity'),
-                row.get('vertical_rate'),
-                row.get('on_ground', False)
-            ),
-            axis=1
-        )
-        
-        # Use the hour_of_day field that's already in the data
-        if 'hour_of_day' not in df.columns:
-            df['hour_of_day'] = pd.to_datetime(df['fetch_time_dt']).dt.hour
-        
-        # Group by hour
-        hourly_stats = df.groupby('hour_of_day').agg({
-            'icao24': 'count',  # flight count
-            'risk_score': 'mean',
-            'baro_altitude': 'mean',
-            'velocity': 'mean'
-        }).reset_index()
-        
-        # Rename columns
-        hourly_stats.rename(columns={
-            'icao24': 'flight_count',
-            'risk_score': 'avg_risk',
-            'baro_altitude': 'avg_altitude',
-            'velocity': 'avg_velocity'
-        }, inplace=True)
-        
-        return hourly_stats
+        return pd.DataFrame(results)
     finally:
         client.close()
 
@@ -215,49 +234,68 @@ def get_daily_patterns():
         return pd.DataFrame()
     
     try:
-        # First get all flights
-        all_flights = list(collection.find())
-        if not all_flights:
+        # Use MongoDB aggregation pipeline
+        pipeline = [
+            {
+                "$project": {
+                    "day": {"$dayOfWeek": "$value.fetch_time_dt"},
+                    "risk_score": 1,
+                    "value.baro_altitude": 1,
+                    "value.velocity": 1,
+                    "value.vertical_rate": 1,
+                    "value.on_ground": 1
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$day",
+                    "flight_count": {"$sum": 1},
+                    "avg_altitude": {"$avg": "$value.baro_altitude"},
+                    "avg_velocity": {"$avg": "$value.velocity"},
+                    "avg_risk": {
+                        "$avg": {
+                            "$function": {
+                                "body": """function(velocity, vertical_rate, on_ground) {
+                                    if (on_ground) return 0;
+                                    let risk = 0;
+                                    if (velocity > 250) risk += 0.5;
+                                    if (Math.abs(vertical_rate) > 10) risk += 0.5;
+                                    return risk;
+                                }""",
+                                "args": ["$value.velocity", "$value.vertical_rate", "$value.on_ground"],
+                                "lang": "js"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "$project": {
+                    "day_of_week": "$_id",
+                    "flight_count": 1,
+                    "avg_risk": 1,
+                    "avg_altitude": 1,
+                    "avg_velocity": 1,
+                    "_id": 0
+                }
+            },
+            {
+                "$sort": {"day_of_week": 1}
+            }
+        ]
+        
+        # Execute aggregation
+        results = list(collection.aggregate(pipeline))
+        
+        # Convert to DataFrame
+        if not results:
             return pd.DataFrame()
-            
-        # Convert to DataFrame - extract 'value' field
-        df = pd.DataFrame([doc["value"] for doc in all_flights if "value" in doc])
         
-        # Calculate risk scores
-        df['risk_score'] = df.apply(
-            lambda row: calculate_risk_score(
-                row.get('velocity'),
-                row.get('vertical_rate'),
-                row.get('on_ground', False)
-            ),
-            axis=1
-        )
-        
-        # Use the day_of_week field that's already in the data
-        if 'day_of_week' not in df.columns:
-            df['day_of_week'] = pd.to_datetime(df['fetch_time_dt']).dt.dayofweek + 1
-        
-        # Group by day
-        daily_stats = df.groupby('day_of_week').agg({
-            'icao24': 'count',  # flight count
-            'risk_score': 'mean',
-            'baro_altitude': 'mean',
-            'velocity': 'mean'
-        }).reset_index()
-        
-        # Rename columns
-        daily_stats.rename(columns={
-            'icao24': 'flight_count',
-            'risk_score': 'avg_risk',
-            'baro_altitude': 'avg_altitude',
-            'velocity': 'avg_velocity'
-        }, inplace=True)
-        
-        return daily_stats
+        return pd.DataFrame(results)
     finally:
         client.close()
 
-def get_congestion_hotspots(min_flights=10):
+def get_congestion_hotspots(min_flights=10, limit=100):
     """Get geographical hotspots with high flight density"""
     client = get_mongodb_client()
     if client is None:
@@ -269,55 +307,79 @@ def get_congestion_hotspots(min_flights=10):
         return pd.DataFrame()
     
     try:
-        # Get all flights
-        all_flights = list(collection.find())
-        if not all_flights:
+        # Use MongoDB aggregation pipeline
+        pipeline = [
+            {
+                "$project": {
+                    "grid_lat": {"$round": ["$value.latitude", 1]},
+                    "grid_lon": {"$round": ["$value.longitude", 1]},
+                    "risk_score": 1,
+                    "value.baro_altitude": 1,
+                    "value.velocity": 1,
+                    "value.vertical_rate": 1,
+                    "value.on_ground": 1
+                }
+            },
+            {
+                "$group": {
+                    "_id": {
+                        "lat": "$grid_lat",
+                        "lon": "$grid_lon"
+                    },
+                    "flight_count": {"$sum": 1},
+                    "avg_altitude": {"$avg": "$value.baro_altitude"},
+                    "avg_risk": {
+                        "$avg": {
+                            "$function": {
+                                "body": """function(velocity, vertical_rate, on_ground) {
+                                    if (on_ground) return 0;
+                                    let risk = 0;
+                                    if (velocity > 250) risk += 0.5;
+                                    if (Math.abs(vertical_rate) > 10) risk += 0.5;
+                                    return risk;
+                                }""",
+                                "args": ["$value.velocity", "$value.vertical_rate", "$value.on_ground"],
+                                "lang": "js"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "$match": {
+                    "flight_count": {"$gte": min_flights}
+                }
+            },
+            {
+                "$project": {
+                    "center_latitude": "$_id.lat",
+                    "center_longitude": "$_id.lon",
+                    "flight_count": 1,
+                    "avg_risk": 1,
+                    "avg_altitude": 1,
+                    "_id": 0
+                }
+            },
+            {
+                "$sort": {"flight_count": -1}
+            },
+            {
+                "$limit": limit
+            }
+        ]
+        
+        # Execute aggregation
+        results = list(collection.aggregate(pipeline))
+        
+        # Convert to DataFrame
+        if not results:
             return pd.DataFrame()
-            
-        # Convert to DataFrame - extract 'value' field
-        df = pd.DataFrame([doc["value"] for doc in all_flights if "value" in doc])
         
-        # Calculate risk scores
-        df['risk_score'] = df.apply(
-            lambda row: calculate_risk_score(
-                row.get('velocity'),
-                row.get('vertical_rate'),
-                row.get('on_ground', False)
-            ),
-            axis=1
-        )
-        
-        # Create grid cells by rounding coordinates
-        df['grid_lat'] = df['latitude'].round(1)
-        df['grid_lon'] = df['longitude'].round(1)
-        
-        # Group by grid cell
-        hotspots = df.groupby(['grid_lat', 'grid_lon']).agg({
-            'icao24': 'count',  # flight count
-            'risk_score': 'mean',
-            'baro_altitude': 'mean'
-        }).reset_index()
-        
-        # Rename columns
-        hotspots.rename(columns={
-            'grid_lat': 'center_latitude',
-            'grid_lon': 'center_longitude',
-            'icao24': 'flight_count',
-            'risk_score': 'avg_risk',
-            'baro_altitude': 'avg_altitude'
-        }, inplace=True)
-        
-        # Filter for minimum flight count
-        hotspots = hotspots[hotspots['flight_count'] >= min_flights]
-        
-        # Sort by flight count descending
-        hotspots = hotspots.sort_values('flight_count', ascending=False)
-        
-        return hotspots
+        return pd.DataFrame(results)
     finally:
         client.close()
 
-def get_flight_density_timeline(interval_minutes=30):
+def get_flight_density_timeline(interval_minutes=30, limit=1000):
     """Get flight density over time with specified interval"""
     client = get_mongodb_client()
     if client is None:
@@ -329,43 +391,57 @@ def get_flight_density_timeline(interval_minutes=30):
         return pd.DataFrame()
     
     try:
-        # Get all flights
-        all_flights = list(collection.find())
-        if not all_flights:
+        # Use MongoDB aggregation pipeline
+        pipeline = [
+            {
+                "$project": {
+                    "time_bucket": {
+                        "$dateTrunc": {
+                            "date": "$value.fetch_time_dt",
+                            "unit": "minute",
+                            "binSize": interval_minutes
+                        }
+                    },
+                    "risk_score": 1,
+                    "value.baro_altitude": 1,
+                    "value.velocity": 1
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$time_bucket",
+                    "flight_count": {"$sum": 1},
+                    "avg_risk": {"$avg": "$risk_score"},
+                    "avg_altitude": {"$avg": "$value.baro_altitude"},
+                    "avg_velocity": {"$avg": "$value.velocity"}
+                }
+            },
+            {
+                "$project": {
+                    "timestamp": "$_id",
+                    "flight_count": 1,
+                    "avg_risk": 1,
+                    "avg_altitude": 1,
+                    "avg_velocity": 1,
+                    "_id": 0
+                }
+            },
+            {
+                "$sort": {"timestamp": 1}
+            },
+            {
+                "$limit": limit
+            }
+        ]
+        
+        # Execute aggregation
+        results = list(collection.aggregate(pipeline))
+        
+        # Convert to DataFrame
+        if not results:
             return pd.DataFrame()
-            
-        # Convert to DataFrame - extract 'value' field
-        df = pd.DataFrame([doc["value"] for doc in all_flights if "value" in doc])
         
-        # Calculate risk scores
-        df['risk_score'] = df.apply(
-            lambda row: calculate_risk_score(
-                row.get('velocity'),
-                row.get('vertical_rate'),
-                row.get('on_ground', False)
-            ),
-            axis=1
-        )
-        
-        # Create time buckets
-        df['time_bucket'] = pd.to_datetime(df['fetch_time_dt']).dt.floor(f'{interval_minutes}min')
-        
-        # Group by time bucket
-        timeline = df.groupby('time_bucket').agg({
-            'icao24': 'count',  # flight count
-            'risk_score': 'mean',
-            'baro_altitude': 'mean',
-            'velocity': 'mean'
-        }).reset_index()
-        
-        # Rename columns
-        timeline.rename(columns={
-            'time_bucket': 'timestamp',
-            'icao24': 'flight_count',
-            'risk_score': 'avg_risk'
-        }, inplace=True)
-        
-        return timeline
+        return pd.DataFrame(results)
     finally:
         client.close()
 
@@ -474,7 +550,7 @@ def get_flight_timeline_data(icao24, start_date=None, end_date=None):
     finally:
         client.close()
 
-def get_top_flights_by_risk():
+def get_top_flights_by_risk(limit=100):
     """Get top flights by risk score"""
     client = get_mongodb_client()
     if client is None:
@@ -486,38 +562,63 @@ def get_top_flights_by_risk():
         return pd.DataFrame()
     
     try:
-        # Get all flights
-        all_flights = list(collection.find())
-        if not all_flights:
+        # Use MongoDB aggregation pipeline
+        pipeline = [
+            {
+                "$group": {
+                    "_id": {
+                        "icao24": "$value.icao24",
+                        "callsign": "$value.callsign",
+                        "origin_country": "$value.origin_country"
+                    },
+                    "count": {"$sum": 1},
+                    "avg_altitude": {"$avg": "$value.baro_altitude"},
+                    "avg_velocity": {"$avg": "$value.velocity"},
+                    "risk_scores": {
+                        "$push": {
+                            "$function": {
+                                "body": """function(velocity, vertical_rate, on_ground) {
+                                    if (on_ground) return 0;
+                                    let risk = 0;
+                                    if (velocity > 250) risk += 0.5;
+                                    if (Math.abs(vertical_rate) > 10) risk += 0.5;
+                                    return risk;
+                                }""",
+                                "args": ["$value.velocity", "$value.vertical_rate", "$value.on_ground"],
+                                "lang": "js"
+                            }
+                        }
+                    }
+                }
+            },
+            {
+                "$project": {
+                    "icao24": "$_id.icao24",
+                    "callsign": "$_id.callsign",
+                    "origin_country": "$_id.origin_country",
+                    "count": 1,
+                    "avg_altitude": 1,
+                    "avg_velocity": 1,
+                    "avg_risk": {"$avg": "$risk_scores"},
+                    "max_risk": {"$max": "$risk_scores"},
+                    "_id": 0
+                }
+            },
+            {
+                "$sort": {"max_risk": -1}
+            },
+            {
+                "$limit": limit
+            }
+        ]
+        
+        # Execute aggregation
+        results = list(collection.aggregate(pipeline))
+        
+        # Convert to DataFrame
+        if not results:
             return pd.DataFrame()
-            
-        # Convert to DataFrame - extract 'value' field
-        df = pd.DataFrame([doc["value"] for doc in all_flights if "value" in doc])
         
-        # Calculate risk scores
-        df['risk_score'] = df.apply(
-            lambda row: calculate_risk_score(
-                row.get('velocity'),
-                row.get('vertical_rate'),
-                row.get('on_ground', False)
-            ),
-            axis=1
-        )
-        
-        # Group by flight (icao24)
-        top_flights = df.groupby(['icao24', 'callsign', 'origin_country']).agg({
-            'risk_score': ['mean', 'max', 'count'],
-            'baro_altitude': 'mean',
-            'velocity': 'mean'
-        }).reset_index()
-        
-        # Flatten column names
-        top_flights.columns = ['icao24', 'callsign', 'origin_country', 'avg_risk', 'max_risk', 'count', 'avg_altitude', 'avg_velocity']
-        
-        # Sort by max risk descending
-        top_flights = top_flights.sort_values('max_risk', ascending=False)
-        
-        # Take top 100
-        return top_flights.head(100)
+        return pd.DataFrame(results)
     finally:
         client.close() 

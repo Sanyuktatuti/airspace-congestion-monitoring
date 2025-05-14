@@ -66,7 +66,7 @@ print(f"Mapbox token: {mapbox_token}")
 
 # Global variables
 UPDATE_INTERVAL = 3  # seconds
-MAX_FLIGHTS = 5000  # maximum flights to display
+MAX_FLIGHTS = 10000  # maximum flights to display
 
 # Add the current directory to the Python path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -1593,7 +1593,7 @@ def main():
             
             if consumer:
                 with st.spinner("Fetching flight data for anomaly detection..."):
-                    messages = fetch_recent_flights(consumer, max_messages=500)
+                    messages = fetch_recent_flights(consumer, max_messages=5000)
                 
                 if messages:
                     # Process flight data
@@ -1985,7 +1985,7 @@ def main():
                             else:
                                 st.info("No daily pattern data available")
                     
-                    # ... [remaining tabs remain unchanged] ...
+                    # ... [rest of the tabs remain unchanged] ...
                 else:
                     st.warning("No historical analytics data found. Click 'Run Analytics' to generate insights.")
     
