@@ -20,7 +20,7 @@ This system provides a scalable, real-time solution for monitoring airspace cong
 - **Storage**: InfluxDB (time-series), MongoDB (historical analytics), and HDFS (batch storage)
 - **Visualization**: Streamlit dashboard for real-time monitoring and historical analysis
 
-![System Architecture](architecture.png)
+![System Architecture](Architecture.png)
 
 ## System Components
 
