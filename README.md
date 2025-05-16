@@ -20,37 +20,7 @@ This system provides a scalable, real-time solution for monitoring airspace cong
 - **Storage**: InfluxDB (time-series), MongoDB (historical analytics), and HDFS (batch storage)
 - **Visualization**: Streamlit dashboard for real-time monitoring and historical analysis
 
-```
-┌────────────┐     ┌────────────┐     ┌────────────┐     ┌────────────┐
-│ Data       │     │ Kafka      │     │ Spark      │     │ InfluxDB   │
-│ Producer   │────>│ (Redpanda) │────>│ Streaming  │────>│ Writer     │
-└────────────┘     └────────────┘     └────────────┘     └────────────┘
-                         │                  │                   │
-                         │                  │                   │
-                         │                  │                   v
-                         │                  │            ┌────────────┐
-                         │                  │            │ InfluxDB   │
-                         │                  │            │ Database   │
-                         │                  │            └────────────┘
-                         │                  v                   ▲
-                         │           ┌────────────┐             │
-                         │           │ HDFS       │             │
-                         │           │ Writer     │             │
-                         │           └────────────┘             │
-                         │                                      │
-                         v                                      │
-                  ┌────────────┐     ┌────────────┐            │
-                  │ Streamlit  │     │ MongoDB    │            │
-                  │ Dashboard  │────>│ Historical │            │
-                  └────────────┘     │ Analytics  │<───────────┘
-                         ▲           └────────────┘
-                         │                 ▲
-                         │                 │
-                         │           ┌────────────┐
-                         └───────────│ Historical │
-                                     │ Data Gen   │
-                                     └────────────┘
-```
+![System Architecture](architecture.png)
 
 ## System Components
 
